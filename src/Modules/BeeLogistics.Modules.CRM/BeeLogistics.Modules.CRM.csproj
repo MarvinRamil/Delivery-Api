@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Hangfire.Core" Version="1.8.22" />
+    <PackageReference Include="Hangfire.Core" Version="1.8.25" />
     <ProjectReference Include="..\..\BeeLogistics.Shared\BeeLogistics.Shared.csproj" />
   </ItemGroup>
 
