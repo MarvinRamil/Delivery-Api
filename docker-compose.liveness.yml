@@ -1,0 +1,54 @@
+version: '3.8'
+
+# Standalone face verification services (run independently from the main backend stack):
+#   - liveness:  YOLO anti-spoofing (real/fake frame classifier), port 8000
+#   - facematch: InsightFace embeddings for per-shift driver face checks, port 8001
+# Run with: docker-compose -f docker-compose.liveness.yml up -d
+
+services:
+  liveness:
+    build:
+      context: .
+      dockerfile: docker/liveness/Dockerfile
+    container_name: beeapp-liveness
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/anti_spoofing.pt:/app/model/anti_spoofing.pt:ro
+    environment:
+      MODEL_PATH: /app/model/anti_spoofing.pt
+      DEVICE: auto
+      CONFIDENCE_THRESHOLD: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    networks:
+      - liveness_network
+
+  facematch:
+    build:
+      context: ./docker/facematch
+      dockerfile: Dockerfile
+    container_name: beeapp-facematch
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      MODEL_NAME: buffalo_l
+      DET_SIZE: 640
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    networks:
+      - liveness_network
+
+networks:
+  liveness_network:
+    driver: bridge

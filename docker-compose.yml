@@ -1,0 +1,386 @@
+version: '3.8'
+
+# Local / manual runs only. CI (GitLab) does NOT use this file; it uses .gitlab-ci.yml and docker run.
+#
+# PII/SII encryption keys are fetched from HashiCorp Vault at startup (see Vault__* below).
+# No key files to copy between machines — every environment just points at Vault with its own
+# RoleId/SecretId.
+#
+# Load environment variables from .env file
+# Create a .env file in the same directory with your configuration
+# Example:
+# POSTGRES_HOST=your-postgres-host (e.g., 100.120.42.59 or postgres.example.com)
+# POSTGRES_PORT=5432
+# POSTGRES_USER=postgres
+# POSTGRES_PASSWORD=your_password
+# POSTGRES_DB=bee_logistics
+# JWT_SECRET=your-secret-key
+# FRONTEND_URL=https://mybeeapp.com
+# BACKOFFICE_URL=https://backoffice.mybeeapp.com
+# MQTT_HOST=mqtt.gregdoesdev.xyz
+# MQTT_PORT=80
+# MQTT_USERNAME=ilocosscript
+# MQTT_PASSWORD=your-mqtt-password
+# MQTT_USE_SSL=false (set to "false" for plain WebSocket, "true" for WSS)
+# MQTT_IGNORE_CERTIFICATE_ERRORS=false (set to "true" to bypass SSL certificate validation)
+# ZAMMAD_API_TOKEN=your-zammad-api-token (required for Zammad helpdesk ticket sync)
+# ZAMMAD_WEBHOOK_SECRET=your-hmac-secret (required for webhook signature verification; must match Zammad webhook HMAC token)
+# SEQ_SERVER_URL=http://your-seq-vm:80 (Seq log server; omit or leave empty to disable)
+# SENTRY_DSN=https://<publicKey>@glitchtip.ilocosscript.live/1 (error monitoring via GlitchTip; omit or leave empty to disable)
+
+services:
+  # Redis Cache (optional - remove if using external Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: beeapp-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+  # Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: beeapp-backend
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      # NOTE: Application SECRETS (DB password, JWT, Xendit, Email, SMS, S3, Zammad, RabbitMQ/Mqtt
+      # credentials) now come from HashiCorp Vault (bee/config) and OVERRIDE anything set below at
+      # runtime. The ${...} secret passthroughs here are legacy/optional. Per-environment endpoints
+      # that are NOT secret (Redis/RabbitMQ host, Mqtt host, Liveness URL) stay as env below.
+      # External PostgreSQL connection string
+      # Format: Host=hostname;Port=5432;Database=dbname;Username=user;Password=password
+      # All values must be set in .env file
+      ConnectionStrings__DefaultConnection: Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      # Redis connection - service name and port in this compose
+      ConnectionStrings__Redis: redis:6379
+      Redis__ConnectionString: redis:6379
+      JwtSettings__Secret: ${JWT_SECRET}
+      JwtSettings__Issuer: ${JWT_ISSUER}
+      JwtSettings__Audience: ${JWT_AUDIENCE}
+      JwtSettings__ExpiryMinutes: ${JWT_EXPIRY_MINUTES}
+      # CORS: All paths on these domains are automatically included
+      # No need to specify paths - CORS works at the origin level (protocol + domain + port)
+      # All values must be set in .env file
+      Cors__AllowedOrigins__0: ${FRONTEND_URL}
+      Cors__AllowedOrigins__1: ${BACKOFFICE_URL}
+      Cors__AllowedOrigins__2: ${FRONTEND_URL_DEV}
+      Cors__AllowedOrigins__3: ${BACKOFFICE_URL_DEV}
+      # Email Configuration
+      Email__Host: ${EMAIL_HOST}
+      Email__Port: ${EMAIL_PORT}
+      Email__Username: ${EMAIL_USERNAME}
+      Email__Password: ${EMAIL_PASSWORD}
+      Email__From: ${EMAIL_FROM}
+      Email__UseSsl: ${EMAIL_USE_SSL}
+      # Payment gateway selection (paymongo | xendit) — routes NEW payments only
+      Payments__ActiveGateway: ${PAYMENTS_ACTIVE_GATEWAY:-paymongo}
+      # PayMongo Payment Configuration
+      PayMongo__SecretKey: ${PAYMONGO_SECRET_KEY}
+      PayMongo__BaseUrl: ${PAYMONGO_BASE_URL:-https://api.paymongo.com/}
+      PayMongo__WebhookSecret: ${PAYMONGO_WEBHOOK_SECRET}
+      PayMongo__CheckoutSuccessUrl: ${PAYMONGO_CHECKOUT_SUCCESS_URL}
+      PayMongo__CheckoutCancelUrl: ${PAYMONGO_CHECKOUT_CANCEL_URL}
+      PayMongo__DefaultTransferProvider: ${PAYMONGO_TRANSFER_PROVIDER:-instapay}
+      PayMongo__TransferCallbackUrl: ${PAYMONGO_TRANSFER_CALLBACK_URL}
+      PayMongo__SourceAccountNumber: ${PAYMONGO_SOURCE_ACCOUNT_NUMBER}
+      PayMongo__SourceAccountName: ${PAYMONGO_SOURCE_ACCOUNT_NAME}
+      PayMongo__SourceAccountBic: ${PAYMONGO_SOURCE_ACCOUNT_BIC}
+      # Xendit Payment Configuration (PublicKey required for webhook signature verification)
+      Xendit__ApiKey: ${XENDIT_API_KEY}
+      Xendit__BaseUrl: ${XENDIT_BASE_URL}
+      Xendit__WebhookToken: ${XENDIT_WEBHOOK_TOKEN}
+      Xendit__PublicKey: ${XENDIT_PUBLIC_KEY}
+      # MQTT Configuration
+      Mqtt__Host: ${MQTT_HOST}
+      Mqtt__Port: ${MQTT_PORT}
+      Mqtt__Username: ${MQTT_USERNAME}
+      Mqtt__Password: ${MQTT_PASSWORD}
+      Mqtt__UseSsl: ${MQTT_USE_SSL:-false}
+      Mqtt__IgnoreCertificateErrors: ${MQTT_IGNORE_CERTIFICATE_ERRORS:-false}
+      # RabbitMQ Configuration (host/port fixed for this compose; credentials from .env)
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      # File storage strategy: "S3" and "DigitalOcean" profiles can both be set - FileStorage__Provider
+      # picks which is active and can be changed without a restart - set in .env
+      FileStorage__Provider: ${FILE_STORAGE_PROVIDER:-DigitalOcean}
+      S3__Endpoint: ${S3_ENDPOINT:-}
+      S3__CdnEndpoint: ${S3_CDN_ENDPOINT:-}
+      S3__Region: ${S3_REGION:-auto}
+      S3__AccessKey: ${S3_ACCESS_KEY:-}
+      S3__SecretKey: ${S3_SECRET_KEY:-}
+      S3__UseSSL: ${S3_USE_SSL:-true}
+      S3__BucketName: ${S3_BUCKET_NAME:-}
+      S3__ObjectKeyPrefix: ${S3_OBJECT_KEY_PREFIX:-}
+      DigitalOcean__Endpoint: ${DIGITALOCEAN_ENDPOINT:-}
+      DigitalOcean__CdnEndpoint: ${DIGITALOCEAN_CDN_ENDPOINT:-}
+      DigitalOcean__Region: ${DIGITALOCEAN_REGION:-sgp1}
+      DigitalOcean__AccessKey: ${DIGITALOCEAN_ACCESS_KEY:-}
+      DigitalOcean__SecretKey: ${DIGITALOCEAN_SECRET_KEY:-}
+      DigitalOcean__UseSSL: ${DIGITALOCEAN_USE_SSL:-true}
+      DigitalOcean__BucketName: ${DIGITALOCEAN_BUCKET_NAME:-}
+      DigitalOcean__ObjectKeyPrefix: ${DIGITALOCEAN_OBJECT_KEY_PREFIX:-}
+      # ClamAV (existing container: name clamav, port 3310 - ensure backend is on same network)
+      ClamAV__Enabled: "true"
+      ClamAV__Host: clamav
+      ClamAV__Port: 3310
+      ClamAV__TimeoutSeconds: 30
+      # Hardcoded app settings (non-secrets)
+      Location__MaxSpeedKmh: 200
+      Location__MaxCoordinatePrecision: 6
+      # Sustained per-driver ingest rate. Burst allowance must stay above the driver app's
+      # BATCH_SIZE_LIMIT (10): it flushes its buffer with Promise.all, so a normal MQTT flush
+      # arrives as one simultaneous burst and a smaller allowance would reject most of it.
+      Location__MaxUpdateRatePerSecond: 1
+      Location__UpdateBurstAllowance: 15
+      Location__MaxLocationAgeMinutes: 5
+      Location__MaxTeleportationDistanceKm: 100
+      # How long a driver's last known position stays usable as a teleport reference. Past this we
+      # hold no opinion rather than a stale one - otherwise a driver who goes offline, travels, and
+      # returns fails the jump check, and since a rejected point never becomes the new baseline
+      # they stay rejected permanently.
+      Location__BaselineMaxAgeMinutes: 5
+      # Idle drivers are evicted from the in-memory rate-limit/baseline state after this long, so
+      # the table does not grow once per driver ever seen.
+      Location__StateRetentionMinutes: 60
+      # The hourly reconciliation job is detection-only except for this: it cancels provider
+      # checkouts abandoned in Pending, so stale links stop being payable. It is the only part of
+      # that job which changes state at the provider.
+      #
+      # Overridable via .env rather than hardcoded like the settings above, because these are the
+      # two knobs you would reach for mid-incident: switch expiry off, or widen the window after a
+      # customer reports a checkout cancelled from under them. Unset behaves identically everywhere.
+      # Ages out the driver location trail. It is a bulk delete on the highest-volume table in the
+      # schema, so it is bounded per run and runs off-peak. Overridable for the same reason as the
+      # payment expiry below: these are the knobs you reach for mid-incident.
+      Location__Retention__Enabled: ${LOCATION_RETENTION_ENABLED:-true}
+      # Covers operational debugging ("where was this driver during that booking") with room for a
+      # dispute raised well after delivery. How long evidence must be kept is a business/legal call.
+      # Validation rejects under 7.
+      Location__Retention__RetentionDays: ${LOCATION_RETENTION_DAYS:-60}
+      Location__Retention__MaxRowsPerRun: 100000
+      Location__Retention__BatchSize: 5000
+      Payment__Reconciliation__ExpireAbandonedCheckouts: ${PAYMENT_EXPIRE_ABANDONED_CHECKOUTS:-true}
+      # Deliberately generous - expiring a checkout a customer is midway through paying is far worse
+      # than leaving a dead one open. Startup validation rejects anything below 2.
+      Payment__Reconciliation__AbandonedCheckoutGraceHours: ${PAYMENT_ABANDONED_CHECKOUT_GRACE_HOURS:-12}
+      # Ceiling on provider expire calls per run so a backlog cannot fan one run out into thousands
+      # of outbound requests; the remainder is picked up next hour.
+      Payment__Reconciliation__MaxCheckoutsExpiredPerRun: 200
+      # How far back the sweep looks for cancelled bookings still holding a paid online payment.
+      # Matches the refund window: past that a refund needs a human anyway, so counting it forever
+      # would be an alert nobody can clear.
+      Payment__Reconciliation__CancelledBookingAuditLookbackHours: ${PAYMENT_CANCELLED_BOOKING_AUDIT_LOOKBACK_HOURS:-168}
+      Payment__Reconciliation__MaxCancelledBookingsAuditedPerRun: 500
+      # Refunds a cancelled booking's online payment automatically. Ships OFF - see .env.example.
+      Payment__Refund__AutoRefundCancelledBookings: ${PAYMENT_AUTO_REFUND_CANCELLED_BOOKINGS:-false}
+      BookingSettings__SmallPackageWeightThreshold: 100
+      BookingSettings__OfferExpirationManyDriversMinutes: 2
+      BookingSettings__OfferExpirationFewDriversMinutes: 5
+      BookingSettings__NoDriverRetryMinutes: 5
+      BookingSettings__MaxBroadcastMinutes: 10
+      BookingSettings__ProximityRadiusKm: 35
+      BookingSettings__H3InitialSearchRadiusKm: 3
+      BookingSettings__H3MaxSearchRadiusKm: 10
+      # How close a scheduled slot must be before it needs a driver found (#50) and counts
+      # against the driver's active limit rather than the scheduled one (#55).
+      BookingSettings__ScheduledClaimLeadMinutes: ${SCHEDULED_CLAIM_LEAD_MINUTES:-45}
+      # Concurrency caps per driver (#55). Active work is capped tightly because it competes
+      # for the next few hours; future claims are a driver planning their diary, so looser.
+      BookingSettings__MaxActiveBookingsPerDriver: ${MAX_ACTIVE_BOOKINGS_PER_DRIVER:-3}
+      BookingSettings__MaxScheduledClaimsPerDriver: ${MAX_SCHEDULED_CLAIMS_PER_DRIVER:-5}
+      Map__H3__MaxRingsHardCap: 12
+      Matching__OfferExpirationSeconds: 60
+      Matching__FavouriteDriverPrioritySeconds: 30
+      Matching__SearchRadiusKm: 50
+      ImageProcessing__MaxWidth: 1920
+      ImageProcessing__MaxHeight: 1080
+      ImageProcessing__WebpQuality: 85
+      ImageProcessing__ResizeMode: Max
+      FileUpload__MaxFileSizeBytes: 10485760
+      FileUpload__RequireVirusScan: "false"
+      RateLimit__AuthEndpointLimit: 5
+      RateLimit__AuthWindowSeconds: 300
+      RateLimit__PasswordEndpointLimit: 3
+      RateLimit__PasswordWindowSeconds: 600
+      RateLimit__GeneralEndpointLimit: 100
+      RateLimit__GeneralWindowSeconds: 60
+      Seed__DefaultPassword: ${SEED_DEFAULT_PASSWORD:-}
+      # Liveness (face verification) - external service on your VM; set in .env (like ClamAV)
+      Liveness__Enabled: ${LIVENESS_ENABLED:-false}
+      Liveness__BaseUrl: ${LIVENESS_BASE_URL:-http://anti-spoofing-api:8000} #http://anti-spoofing-api:8000
+      Liveness__TimeoutSeconds: ${LIVENESS_TIMEOUT_SECONDS:-30}
+      Liveness__SessionExpiryMinutes: ${LIVENESS_SESSION_EXPIRY_MINUTES:-10}
+      # Didit hosted KYC (ID document + selfie + liveness + face match) - keys from https://business.didit.me
+      Didit__Enabled: ${DIDIT_ENABLED:-false}
+      Didit__ApiKey: ${DIDIT_API_KEY:-}
+      Didit__WebhookSecret: ${DIDIT_WEBHOOK_SECRET:-}
+      Didit__WorkflowId: ${DIDIT_WORKFLOW_ID:-}
+      Didit__CallbackUrl: ${DIDIT_CALLBACK_URL:-beeapp://kyc-callback}
+      # Matrix booking chat (self-hosted Synapse; see docker/synapse/README.md). Ships OFF - with
+      # Matrix__Enabled=false nothing provisions rooms and booking creation is unchanged.
+      # AsToken/HsToken/AdminToken come from Vault in deployed environments; the passthroughs here
+      # are for pointing a local backend at a local Synapse.
+      Matrix__Enabled: ${MATRIX_ENABLED:-false}
+      Matrix__HomeserverUrl: ${MATRIX_HOMESERVER_URL:-http://beeapp-synapse:8008}
+      Matrix__PublicHomeserverUrl: ${MATRIX_PUBLIC_HOMESERVER_URL:-}
+      Matrix__ServerName: ${MATRIX_SERVER_NAME:-}
+      # Isolation boundary between environments sharing the one homeserver - see .env.example.
+      Matrix__EnvironmentPrefix: ${MATRIX_ENVIRONMENT_PREFIX:-}
+      Matrix__AppServiceId: ${MATRIX_APPSERVICE_ID:-}
+      Matrix__SenderLocalpart: ${MATRIX_SENDER_LOCALPART:-}
+      Matrix__AsToken: ${MATRIX_AS_TOKEN:-}
+      Matrix__HsToken: ${MATRIX_HS_TOKEN:-}
+      Matrix__AdminToken: ${MATRIX_ADMIN_TOKEN:-}
+      Matrix__TimeoutSeconds: ${MATRIX_TIMEOUT_SECONDS:-20}
+      Matrix__RoomFreezeDelayHours: ${MATRIX_ROOM_FREEZE_DELAY_HOURS:-24}
+      Matrix__RoomRetentionDays: ${MATRIX_ROOM_RETENTION_DAYS:-90}
+      # Self-hosted face match (InsightFace) for per-shift driver checks - external service like Liveness
+      FaceMatch__Enabled: ${FACEMATCH_ENABLED:-false}
+      FaceMatch__BaseUrl: ${FACEMATCH_BASE_URL:-http://facematch-api:8001}
+      FaceMatch__MatchThreshold: ${FACEMATCH_THRESHOLD:-0.45}
+      # Per-shift face check gate (requires FaceMatch enabled; ShadowMode logs scores without blocking)
+      ShiftCheck__Enabled: ${SHIFTCHECK_ENABLED:-false}
+      ShiftCheck__MaxAgeHours: ${SHIFTCHECK_MAX_AGE_HOURS:-12}
+      ShiftCheck__ShadowMode: ${SHIFTCHECK_SHADOW_MODE:-false}
+      # PII/SII encryption keys from HashiCorp Vault (KV v2 + AppRole). RoleId/SecretId from .env.
+      Vault__Address: ${VAULT_ADDRESS:-https://10.10.10.117:8200}
+      Vault__MountPath: ${VAULT_MOUNT_PATH:-bee}
+      Vault__SecretPath: ${VAULT_SECRET_PATH:-dpa/encryption}
+      Vault__SkipTlsVerify: ${VAULT_SKIP_TLS_VERIFY:-true}
+      Vault__RoleId: ${VAULT_ROLE_ID}
+      Vault__SecretId: ${VAULT_SECRET_ID}
+      # Zammad helpdesk integration (same token for all environments)
+      Zammad__BaseUrl: ${ZAMMAD_BASE_URL:-http://10.10.10.91:9080}
+      Zammad__ApiToken: ${ZAMMAD_API_TOKEN}
+      Zammad__WebhookSecret: ${ZAMMAD_WEBHOOK_SECRET}
+      Zammad__Enabled: "true"
+      # Queue each ticket type lands in. A Zammad group is what decides which agents see a
+      # ticket and who can appear in its Owner dropdown - the organization on the customer
+      # does not grant agents anything. Before pointing these at a new group, give the Agent
+      # role full permission on it, or the queue goes invisible to everyone.
+      Zammad__CustomerGroup: "${ZAMMAD_CUSTOMER_GROUP:-BeeOnDemand - Customer}"
+      Zammad__DriverGroup: "${ZAMMAD_DRIVER_GROUP:-BeeOnDemand - Driver}"
+      # Seq log server (optional; set SEQ_SERVER_URL in .env for dedicated Seq VM)
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      # Sentry error monitoring (optional; leave SENTRY_DSN empty in .env to disable entirely)
+      Sentry__Dsn: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-local}
+      # SMS (Ilocos relay primary, PhilSMS fallback)
+      Sms__Providers__IlocosSms__ApiBaseUrl: ${SMS_ILOCOS_API_BASE_URL:-https://sms.ilocosscript.live}
+      Sms__Providers__IlocosSms__ApiKey: ${SMS_ILOCOS_API_KEY:-}
+      Sms__Providers__PhilSMS__ApiBaseUrl: ${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}
+      Sms__Providers__PhilSMS__ApiToken: ${PHILSMS_API_TOKEN:-}
+      Sms__Providers__PhilSMS__SenderId: ${PHILSMS_SENDER_ID:-BeeOnDemand}
+      Sms__ForceProvider: ${SMS_FORCE_PROVIDER:-}
+      # Legacy PhilSMS keys (fallback if Sms:Providers:PhilSMS:ApiToken is empty)
+      PhilSMS__ApiBaseUrl: ${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}
+      PhilSMS__ApiToken: ${PHILSMS_API_TOKEN:-}
+      PhilSMS__SenderId: ${PHILSMS_SENDER_ID:-BeeOnDemand}
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads_data:/app/wwwroot/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - default
+
+  # RabbitMQ Message Broker + Management UI
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: beeapp-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # Message protocol
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - default
+
+  # Matrix homeserver — per-booking driver↔customer chat.
+  #
+  # Optional: guarded by the "matrix" profile, so a plain `docker compose up` does not start it and
+  # nothing here is required for the backend to run (Matrix__Enabled defaults to false).
+  #   docker compose --profile matrix up -d synapse
+  #
+  # One instance serves every environment; they are kept apart by exclusive appservice namespaces
+  # (@bee_u_dev_* vs @bee_u_prod_*), not by separate homeservers.
+  #
+  # First run needs a generated signing key and the rendered conf/99-secrets.yaml plus a
+  # conf/bee-appservice-<env>.yaml per environment. See docker/synapse/README.md. Synapse will not
+  # start without them.
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: beeapp-synapse
+    profiles: ["matrix"]
+    restart: unless-stopped
+    environment:
+      # A directory, not a file: Synapse merges every *.yaml under it in filename order, which is
+      # what keeps committed config and rendered secrets in separate files.
+      SYNAPSE_CONFIG_PATH: /config
+      UID: "991"
+      GID: "991"
+    volumes:
+      - ./docker/synapse/conf:/config
+      - synapse_data:/data
+    ports:
+      # Client API only. The federation port (8448) is deliberately not exposed and has no
+      # listener configured — see conf/10-homeserver.yaml.
+      - "8008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8008/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+
+  # RedisInsight - Dashboard for Redis
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: beeapp-redis-insight
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+
+volumes:
+  redis_data:
+  uploads_data:
+  rabbitmq_data:
+  # Holds the homeserver signing key and the media store. Losing the signing key is not
+  # recoverable — back this up alongside the Synapse database.
+  synapse_data:
+
+networks:
+  default:
+    external: true
+    name: npm-desktop_default

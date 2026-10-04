@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="MassTransit.Abstractions" Version="8.5.7" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\BeeLogistics.Shared\BeeLogistics.Shared.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Notification\BeeLogistics.Modules.Notification.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Verification\BeeLogistics.Modules.Verification.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Templates\Email\*.html" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,603 @@
+{
+  "info": {
+    "name": "Bee Logistics API (Complete)",
+    "description": "Complete API collection: Auth, OTP, Vehicle Pricing, Bookings, Lalamove, Driver Offers, Broadcast. See docs/ for guides.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5248" },
+    { "key": "token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Backoffice Login",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"YourPassword123!\"\n}"
+            },
+            "url": {"raw": "{{base_url}}/api/auth/backoffice-login", "host": ["{{base_url}}"], "path": ["api", "auth", "backoffice-login"]}
+          }
+        },
+        {
+          "name": "Login (Email)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer@example.com\",\n  \"password\": \"YourPassword123!\"\n}"
+            },
+            "url": {"raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"]}
+          }
+        },
+        {
+          "name": "Login (Phone Number)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"09171234567\",\n  \"password\": \"YourPassword123!\"\n}"
+            },
+            "url": {"raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"]}
+          }
+        },
+        {
+          "name": "Send OTP",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/send-otp", "host": ["{{base_url}}"], "path": ["api", "auth", "send-otp"]}
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"code\": \"123456\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/verify-otp", "host": ["{{base_url}}"], "path": ["api", "auth", "verify-otp"]}
+          }
+        },
+        {
+          "name": "Verify OTP and Register",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"code\": \"123456\",\n  \"password\": \"YourPassword123!\",\n  \"fullName\": \"John Doe\",\n  \"role\": \"Driver\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/verify-otp-and-register", "host": ["{{base_url}}"], "path": ["api", "auth", "verify-otp-and-register"]}
+          }
+        },
+        {
+          "name": "Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/resend-otp", "host": ["{{base_url}}"], "path": ["api", "auth", "resend-otp"]}
+          }
+        },
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"customer@example.com\",\n  \"password\": \"YourPassword123!\",\n  \"fullName\": \"John Doe\",\n  \"role\": \"Customer\",\n  \"phoneNumber\": \"+639171234567\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"]}
+          }
+        },
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"]}
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"fullName\": \"John Doe\",\n  \"phoneNumber\": \"+639171234567\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/profile", "host": ["{{base_url}}"], "path": ["api", "auth", "profile"]}
+          }
+        },
+        {
+          "name": "Change Password Request OTP",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/auth/change-password/request-otp", "host": ["{{base_url}}"], "path": ["api", "auth", "change-password", "request-otp"]}
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"otp\": \"123456\",\n  \"newPassword\": \"NewPassword123!\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/change-password", "host": ["{{base_url}}"], "path": ["api", "auth", "change-password"]}
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/auth/logout", "host": ["{{base_url}}"], "path": ["api", "auth", "logout"]}
+          }
+        },
+        {
+          "name": "Logout All",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/auth/logout-all", "host": ["{{base_url}}"], "path": ["api", "auth", "logout-all"]}
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"refreshToken\": \"your-refresh-token\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"]}
+          }
+        },
+        {
+          "name": "Verify Email",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"token\": \"<token-from-email>\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/verify-email", "host": ["{{base_url}}"], "path": ["api", "auth", "verify-email"]}
+          }
+        },
+        {
+          "name": "Resend Verification",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/resend-verification", "host": ["{{base_url}}"], "path": ["api", "auth", "resend-verification"]}
+          }
+        },
+        {
+          "name": "Registration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/auth/registration-status?email=user@example.com", "host": ["{{base_url}}"], "path": ["api", "auth", "registration-status"], "query": [{"key": "email", "value": "user@example.com"}]}
+          }
+        },
+        {
+          "name": "Complete Driver Registration",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "formdata", "formdata": [{"key": "licenseNumber", "value": "", "type": "text"}, {"key": "vehiclePlate", "value": "", "type": "text"}]},
+            "url": {"raw": "{{base_url}}/api/auth/register/driver/complete", "host": ["{{base_url}}"], "path": ["api", "auth", "register", "driver", "complete"]}
+          }
+        },
+        {
+          "name": "Forgot Password - Get Questions",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/forgot-password/get-questions", "host": ["{{base_url}}"], "path": ["api", "auth", "forgot-password", "get-questions"]}
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"answers\": []\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/forgot-password", "host": ["{{base_url}}"], "path": ["api", "auth", "forgot-password"]}
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"token\": \"<reset-token>\",\n  \"newPassword\": \"NewPassword123!\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/reset-password", "host": ["{{base_url}}"], "path": ["api", "auth", "reset-password"]}
+          }
+        },
+        {
+          "name": "Security Questions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/auth/security-questions", "host": ["{{base_url}}"], "path": ["api", "auth", "security-questions"]}
+          }
+        },
+        {
+          "name": "Check Email",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/check-email", "host": ["{{base_url}}"], "path": ["api", "auth", "check-email"]}
+          }
+        },
+        {
+          "name": "Create Backoffice User",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"Password123!\",\n  \"fullName\": \"Admin User\",\n  \"role\": \"Admin\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/create-backoffice-user", "host": ["{{base_url}}"], "path": ["api", "auth", "create-backoffice-user"]}
+          }
+        },
+        {
+          "name": "Revoke",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"refreshToken\": \"<refresh-token-to-revoke>\"\n}"},
+            "url": {"raw": "{{base_url}}/api/auth/revoke", "host": ["{{base_url}}"], "path": ["api", "auth", "revoke"]}
+          }
+        },
+        {
+          "name": "Revoke User Tokens",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/auth/revoke-user-tokens/:userId", "host": ["{{base_url}}"], "path": ["api", "auth", "revoke-user-tokens", ":userId"], "variable": [{"key": "userId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Vehicle Pricing",
+      "item": [
+        {
+          "name": "Get All",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing"]}
+          }
+        },
+        {
+          "name": "Get By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Get By Vehicle Type",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/vehicle-type/Van", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", "vehicle-type", "Van"]}
+          }
+        },
+        {
+          "name": "Get Versions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId/versions", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId", "versions"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Create",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"vehicleType\": \"Van\",\n  \"types\": \"Small Van\",\n  \"baseFare\": 100,\n  \"perKm0to5\": 15,\n  \"perKmAbove5\": 12,\n  \"additionalStopFee\": 30\n}"},
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing"]}
+          }
+        },
+        {
+          "name": "Update",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"types\": \"Small Van\",\n  \"baseFare\": 110,\n  \"perKm0to5\": 16,\n  \"perKmAbove5\": 13,\n  \"additionalStopFee\": 35\n}"},
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Delete",
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Activate",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId/activate", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId", "activate"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Deactivate",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/vehicle-pricing/:vehiclePricingId/deactivate", "host": ["{{base_url}}"], "path": ["api", "vehicle-pricing", ":vehiclePricingId", "deactivate"], "variable": [{"key": "vehiclePricingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bookings",
+      "item": [
+        {
+          "name": "Get All (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings?page=1&pageSize=20", "host": ["{{base_url}}"], "path": ["api", "bookings"], "query": [{"key": "page", "value": "1"}, {"key": "pageSize", "value": "20"}]}
+          }
+        },
+        {
+          "name": "Get By Id",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "My Bookings",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/my-bookings", "host": ["{{base_url}}"], "path": ["api", "bookings", "my-bookings"]}
+          }
+        },
+        {
+          "name": "Get By Customer",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/customer/:customerId", "host": ["{{base_url}}"], "path": ["api", "bookings", "customer", ":customerId"], "variable": [{"key": "customerId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Pending Assignment",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/pending-assignment", "host": ["{{base_url}}"], "path": ["api", "bookings", "pending-assignment"]}
+          }
+        },
+        {
+          "name": "Assigned To Me",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/assigned-to-me", "host": ["{{base_url}}"], "path": ["api", "bookings", "assigned-to-me"]}
+          }
+        },
+        {
+          "name": "Update Status",
+          "request": {
+            "method": "PATCH",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"status\": \"Cancelled\"\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/status", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "status"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Delete",
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Classify Size",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"size\": \"Small\"\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/classify-size", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "classify-size"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Assign To Operator",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"operatorTenantId\": \"00000000-0000-0000-0000-000000000000\"\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/assign-to-operator", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "assign-to-operator"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Start Broadcast",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/start-broadcast", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "start-broadcast"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Get Item Image",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/item-image", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "item-image"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Stops",
+          "item": [
+            {
+              "name": "Mark Stop In Transit",
+              "request": {
+                "method": "POST",
+                "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+                "url": {"raw": "{{base_url}}/api/bookings/:bookingId/stops/:stopId/in-transit", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "stops", ":stopId", "in-transit"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}, {"key": "stopId", "value": "00000000-0000-0000-0000-000000000000"}]}
+              }
+            },
+            {
+              "name": "Mark Stop Arrived",
+              "request": {
+                "method": "POST",
+                "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+                "url": {"raw": "{{base_url}}/api/bookings/:bookingId/stops/:stopId/arrive", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "stops", ":stopId", "arrive"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}, {"key": "stopId", "value": "00000000-0000-0000-0000-000000000000"}]}
+              }
+            },
+            {
+              "name": "Complete Stop",
+              "request": {
+                "method": "POST",
+                "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+                "url": {"raw": "{{base_url}}/api/bookings/:bookingId/stops/:stopId/complete", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "stops", ":stopId", "complete"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}, {"key": "stopId", "value": "00000000-0000-0000-0000-000000000000"}]}
+              }
+            },
+            {
+              "name": "Upload Proof of Delivery",
+              "request": {
+                "method": "POST",
+                "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {"key": "image", "type": "file"},
+                    {"key": "signature", "type": "file"},
+                    {"key": "recipientName", "value": "", "type": "text"},
+                    {"key": "notes", "value": "", "type": "text"}
+                  ]
+                },
+                "url": {"raw": "{{base_url}}/api/bookings/:bookingId/stops/:stopId/pod", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "stops", ":stopId", "pod"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}, {"key": "stopId", "value": "00000000-0000-0000-0000-000000000000"}]}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bookings (Lalamove)",
+      "item": [
+        {
+          "name": "Calculate Fare",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"vehicleType\": \"Van\",\n  \"stops\": [\n    { \"sequence\": 0, \"address\": \"123 Pickup St\", \"type\": \"Pickup\", \"latitude\": 14.5, \"longitude\": 121.0 },\n    { \"sequence\": 1, \"address\": \"456 Dropoff St\", \"type\": \"Dropoff\", \"latitude\": 14.6, \"longitude\": 121.1 }\n  ],\n  \"weightKg\": 10,\n  \"priorityFee\": 50\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/calculate-fare", "host": ["{{base_url}}"], "path": ["api", "bookings", "calculate-fare"]}
+          }
+        },
+        {
+          "name": "Create Lalamove Booking",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"customerId\": \"00000000-0000-0000-0000-000000000000\",\n  \"vehicleType\": \"Van\",\n  \"cargoDescription\": \"Documents\",\n  \"scheduleDate\": \"2026-02-01T00:00:00Z\",\n  \"serviceType\": \"Immediate\",\n  \"stops\": [\n    { \"sequence\": 0, \"address\": \"123 Pickup St\", \"type\": \"Pickup\", \"latitude\": 14.5, \"longitude\": 121.0, \"contactName\": \"John\", \"contactPhone\": \"+639171234567\" },\n    { \"sequence\": 1, \"address\": \"456 Dropoff St\", \"type\": \"Dropoff\", \"latitude\": 14.6, \"longitude\": 121.1, \"contactName\": \"Jane\", \"contactPhone\": \"+639179876543\" }\n  ],\n  \"estimatedFare\": 260,\n  \"weightKg\": 10,\n  \"priorityFee\": 50,\n  \"notes\": \"Handle with care\"\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/lalamove", "host": ["{{base_url}}"], "path": ["api", "bookings", "lalamove"]}
+          }
+        },
+        {
+          "name": "Available Drivers",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/available-drivers", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "available-drivers"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Select Driver",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {"mode": "raw", "raw": "{\n  \"driverId\": \"00000000-0000-0000-0000-000000000000\"\n}"},
+            "url": {"raw": "{{base_url}}/api/bookings/:bookingId/select-driver", "host": ["{{base_url}}"], "path": ["api", "bookings", ":bookingId", "select-driver"], "variable": [{"key": "bookingId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Driver Offers",
+      "item": [
+        {
+          "name": "Pending Offers",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/driver-offers/pending?limit=10", "host": ["{{base_url}}"], "path": ["api", "driver-offers", "pending"], "query": [{"key": "limit", "value": "10"}]}
+          }
+        },
+        {
+          "name": "Accept Offer",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/driver-offers/:offerId/accept", "host": ["{{base_url}}"], "path": ["api", "driver-offers", ":offerId", "accept"], "variable": [{"key": "offerId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        },
+        {
+          "name": "Reject Offer",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/driver-offers/:offerId/reject", "host": ["{{base_url}}"], "path": ["api", "driver-offers", ":offerId", "reject"], "variable": [{"key": "offerId", "value": "00000000-0000-0000-0000-000000000000"}]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get Online Drivers",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {"raw": "{{base_url}}/api/users/drivers/online", "host": ["{{base_url}}"], "path": ["api", "users", "drivers", "online"], "query": [{"key": "companyId", "value": "", "disabled": true}]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "Send Push (Backoffice)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Test Notification\",\n  \"body\": \"This is a test push notification.\",\n  \"data\": {\"type\": \"test\"},\n  \"userId\": \"user-guid-here\",\n  \"appType\": \"driver\"\n}"
+            },
+            "url": {"raw": "{{base_url}}/api/notifications/send", "host": ["{{base_url}}"], "path": ["api", "notifications", "send"]}
+          }
+        },
+        {
+          "name": "Register Device Token",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceToken\": \"your-fcm-device-token\",\n  \"platform\": \"android\",\n  \"appType\": \"driver\"\n}"
+            },
+            "url": {"raw": "{{base_url}}/api/notifications/register-device", "host": ["{{base_url}}"], "path": ["api", "notifications", "register-device"]}
+          }
+        }
+      ]
+    }
+  ]
+}

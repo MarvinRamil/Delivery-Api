@@ -1,0 +1,38 @@
+---
+description: BeeLogistics backend architecture — module layering, SOLID, CQRS, outbox, and conventions. Apply when changing modules, handlers, or messaging.
+globs: src/**/*.cs
+alwaysApply: true
+---
+
+# BeeLogistics Backend Design
+
+Reference: `docs/MODULE_LAYERING.md`, `docs/DEVELOPMENT.md`, `docs/SOLID_REFACTORING_SUMMARY.md`, `docs/MASSTRANSIT_OUTBOX_GUIDE.md`, `docs/LALAMOVE_BOOKING_FLOW.md`, `docs/DRIVER_OFFER_FLOW.md`.
+
+## Module layering
+
+- **Domain** → entities, enums. **Application** → interfaces (repositories, services), DTOs, handlers. **Infrastructure** → DbContext, repository implementations. **Presentation** → controllers only.
+- Controllers **do not** use DbContext; they use repository/service **interfaces** from Application.
+- Repository **interfaces** in `Application/Interfaces/`. **Implementations** in `Infrastructure/Repositories/`. Wire in the module’s `DependencyInjection.cs`.
+
+## Patterns
+
+- **CQRS**: Commands (writes) and queries (reads) as MediatR requests; handlers in `Application/Handlers/`.
+- **Result pattern**: Use `Result<T>` / `Result.Fail` / `Result.Ok` for handler outcomes; controllers use `FromResult(result)`.
+- **SOLID**: Handlers and services depend on **interfaces** (DIP). One responsibility per class (SRP). Small, focused interfaces (ISP).
+
+## MassTransit outbox (Sales / booking broadcast)
+
+- Outbox stores messages in the **same DbContext** (e.g. SalesDbContext). Messages are sent to RabbitMQ only after **SaveChanges** persists the outbox row.
+- **Order**: Publish first, then `SaveChangesAsync` in the same scope so the outbox entry is in the same transaction. Do not set “in progress” status before publish if the consumer sets it after creating offers (avoids consumer no-op).
+- See `docs/MASSTRANSIT_OUTBOX_GUIDE.md` for details.
+
+## Naming and style
+
+- PascalCase for classes, methods, properties. Private fields: `_camelCase`. Interfaces: `I` prefix. One class per file; file name matches class name.
+- Use `var` when type is obvious; XML docs for public APIs.
+
+## Adding features
+
+- New read: Query + handler + optional repository method. Controller sends query via MediatR.
+- New write: Command + handler; use repositories and `Result`; for events, Publish then SaveChanges when using outbox.
+- New module: Domain → Application (interfaces, DTOs, handlers) → Infrastructure (DbContext, repos) → Presentation (controllers); register in `Program.cs` and MediatR assemblies.

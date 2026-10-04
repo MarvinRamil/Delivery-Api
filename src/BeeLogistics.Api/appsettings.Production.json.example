@@ -1,0 +1,246 @@
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=YOUR_POSTGRES_HOST;Database=YOUR_DATABASE;Username=YOUR_USERNAME;Password=YOUR_PASSWORD",
+    "Redis": "YOUR_REDIS_HOST:6379"
+  },
+  "JwtSettings": {
+    "Secret": "YOUR_JWT_SECRET_KEY_MINIMUM_32_CHARACTERS_LONG",
+    "Issuer": "BeeLogisticsApi",
+    "Audience": "BeeLogisticsClient",
+    "ExpiryMinutes": 60
+  },
+  "Clerk": {
+    "_comment": "Leave Authority/Issuer empty to keep Clerk DISABLED (legacy JWT only). Set to enable Clerk auth.",
+    "Authority": "https://YOUR_CLERK_FRONTEND_API",
+    "Issuer": "https://YOUR_CLERK_FRONTEND_API",
+    "JwksUrl": "https://YOUR_CLERK_FRONTEND_API/.well-known/jwks.json",
+    "Audience": "",
+    "WebhookSigningSecret": "whsec_YOUR_CLERK_WEBHOOK_SIGNING_SECRET",
+    "SecretKey": "sk_live_YOUR_CLERK_BACKEND_API_SECRET_KEY"
+  },
+  "Cors": {
+    "AllowedOrigins": [
+      "https://your-frontend-domain.com",
+      "https://your-backoffice-domain.com"
+    ]
+  },
+  "Email": {
+    "Host": "smtp.your-email-provider.com",
+    "Port": 465,
+    "Username": "your-email@domain.com",
+    "Password": "YOUR_EMAIL_PASSWORD",
+    "From": "noreply@yourdomain.com",
+    "UseSsl": true
+  },
+  "Seed": {
+    "DefaultPassword": "<set via Seed__DefaultPassword - required for DB seeding>"
+  },
+  "Payments": {
+    "_comment": "Active gateway for NEW payments/top-ups/withdrawals. Existing records route by their stored provider, so keep both gateways configured while either has in-flight payments.",
+    "ActiveGateway": "paymongo"
+  },
+  "Payment": {
+    "Reconciliation": {
+      "_comment": "The hourly reconciliation job is detection-only except for this: it cancels provider checkouts abandoned in Pending, so stale links stop being payable. Set ExpireAbandonedCheckouts to false to switch that off without a deploy. The grace window is deliberately generous - expiring a checkout a customer is midway through paying is far worse than leaving a dead one open - and startup validation rejects anything under 2 hours.",
+      "ExpireAbandonedCheckouts": true,
+      "AbandonedCheckoutGraceHours": 12,
+      "MaxCheckoutsExpiredPerRun": 200
+    }
+  },
+  "PayMongo": {
+    "SecretKey": "sk_live_YOUR_PAYMONGO_SECRET_KEY",
+    "BaseUrl": "https://api.paymongo.com/",
+    "WebhookSecret": "whsk_YOUR_PAYMONGO_WEBHOOK_SECRET",
+    "StrictWebhookValidation": true,
+    "WebhookToleranceSeconds": 300,
+    "CheckoutSuccessUrl": "https://your-frontend-domain.com/payment/success",
+    "CheckoutCancelUrl": "https://your-frontend-domain.com/payment/cancelled",
+    "DefaultTransferProvider": "instapay",
+    "SourceAccountNumber": "YOUR_PAYMONGO_WALLET_ACCOUNT_NUMBER",
+    "SourceAccountName": "YOUR_PAYMONGO_WALLET_ACCOUNT_NAME",
+    "SourceAccountBic": "YOUR_PAYMONGO_WALLET_BIC"
+  },
+  "Xendit": {
+    "ApiKey": "YOUR_XENDIT_API_KEY",
+    "BaseUrl": "https://api.xendit.co/",
+    "WebhookToken": "YOUR_WEBHOOK_TOKEN",
+    "TopUpInvoiceDurationSeconds": 86400,
+    "StrictWebhookValidation": true,
+    "AllowedSourceIps": [
+      "YOUR_XENDIT_WEBHOOK_IP"
+    ]
+  },
+  "Mqtt": {
+    "Host": "your-mqtt-host.com",
+    "Port": 80,
+    "Username": "YOUR_MQTT_USERNAME",
+    "Password": "YOUR_MQTT_PASSWORD",
+    "UseSsl": false,
+    "IgnoreCertificateErrors": false,
+    "LocationTopic": "beelogistics/drivers/+/location",
+    "TokenExpiryHours": 24
+  },
+  "Location": {
+    "MaxSpeedKmh": 200,
+    "MaxCoordinatePrecision": 6,
+    "MaxUpdateRatePerSecond": 1,
+    "UpdateBurstAllowance": 15,
+    "MaxLocationAgeMinutes": 5,
+    "MaxTeleportationDistanceKm": 100,
+    "BaselineMaxAgeMinutes": 5,
+    "StateRetentionMinutes": 60,
+    "Retention": {
+      "_comment": "Ages out map.LocationHistory, the driver trail. Bounded per run and scheduled off-peak because the live ingest path writes to this table continuously. Set Enabled false to stop deleting. RetentionDays covers operational debugging with room for a dispute raised well after delivery; how long evidence must be kept is a business/legal call. Startup validation rejects under 7.",
+      "Enabled": true,
+      "RetentionDays": 60,
+      "MaxRowsPerRun": 100000,
+      "BatchSize": 5000
+    }
+  },
+  "RabbitMQ": {
+    "Host": "YOUR_RABBITMQ_HOST",
+    "Port": 5672,
+    "Username": "YOUR_RABBITMQ_USER",
+    "Password": "YOUR_RABBITMQ_PASSWORD"
+  },
+  "BookingSettings": {
+    "SmallVehicleTruckTypes": [
+      "Closed Van",
+      "L300"
+    ],
+    "SmallPackageWeightThreshold": 100,
+    "OfferExpirationManyDriversMinutes": 2,
+    "OfferExpirationFewDriversMinutes": 5,
+    "NoDriverRetryMinutes": 5,
+    "MaxBroadcastMinutes": 10,
+    "ProximityRadiusKm": 35,
+    "H3InitialSearchRadiusKm": 3,
+    "H3MaxSearchRadiusKm": 10,
+    "MaxOffersPerBroadcast": 15,
+    "ScheduledClaimLeadMinutes": 45,
+    "MaxActiveBookingsPerDriver": 3,
+    "MaxScheduledClaimsPerDriver": 5,
+    "PulseIntervalFreshSeconds": 10,
+    "PulseIntervalWarmSeconds": 30,
+    "PulseIntervalCoolSeconds": 60,
+    "PulseIntervalStaleSeconds": 120,
+    "MaxBookingsPerPulseTick": 200,
+    "DeliveryModes": {
+      "Regular": {},
+      "OnDemand": {
+        "QualityScoreWeight": 0.0,
+        "QualityScoreWindowDays": 14,
+        "QualityScoreMinSamples": 5
+      },
+      "Pooling": {
+        "PoolingScoreWeight": 0.0,
+        "MaxDetourKm": 4.0,
+        "PoolingCandidateLimit": 45
+      }
+    }
+  },
+  "Map": {
+    "H3": {
+      "MaxRingsHardCap": 12
+    }
+  },
+  "DriverWallet": {
+    "DefaultTopUpNegativeLimit": -500,
+    "DefaultCashJobBlockThreshold": -200,
+    "PlatformCommissionRate": 0.05,
+    "MinTopUpAmount": 50,
+    "TopUpInvoiceDurationSeconds": 86400
+  },
+  "Expo": {
+    "AccessToken": "YOUR_EXPO_ACCESS_TOKEN"
+  },
+  "Features": {
+    "DisableRateLimiting": false,
+    "SmsOtp": false
+  },
+  "RateLimit": {
+    "AuthEndpointLimit": 5,
+    "AuthWindowSeconds": 300,
+    "PasswordEndpointLimit": 3,
+    "PasswordWindowSeconds": 600,
+    "GeneralEndpointLimit": 100,
+    "GeneralWindowSeconds": 60,
+    "DriverOffersPendingLimit": 600
+  },
+  "ClamAV": {
+    "Enabled": false,
+    "Host": "localhost",
+    "Port": 3310,
+    "TimeoutSeconds": 30
+  },
+  "FileUpload": {
+    "MaxFileSizeBytes": 10485760,
+    "MaxFileSizeMB": 10,
+    "AllowedImageExtensions": [
+      ".jpg",
+      ".jpeg",
+      ".png"
+    ],
+    "AllowedImageMimeTypes": [
+      "image/jpeg",
+      "image/png"
+    ],
+    "RequireVirusScan": false
+  },
+  "ImageProcessing": {
+    "MaxWidth": 1920,
+    "MaxHeight": 1080,
+    "WebpQuality": 85,
+    "ResizeMode": "Max"
+  },
+  "FileStorage": {
+    "UseLocal": false
+  },
+  "S3": {
+    "Endpoint": "YOUR_S3_ENDPOINT",
+    "AccessKey": "YOUR_S3_ACCESS_KEY",
+    "SecretKey": "YOUR_S3_SECRET_KEY",
+    "UseSSL": true,
+    "BucketName": "beelogistics",
+    "ObjectKeyPrefix": ""
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "Serilog": {
+    "Using": [
+      "Serilog.Sinks.Console",
+      "Serilog.Sinks.File"
+    ],
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft": "Warning",
+        "Microsoft.Hosting.Lifetime": "Information",
+        "Microsoft.EntityFrameworkCore": "Warning"
+      }
+    },
+    "WriteTo": [
+      {
+        "Name": "Console"
+      },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "logs/log-.txt",
+          "rollingInterval": "Day",
+          "retainedFileCountLimit": 7
+        }
+      }
+    ],
+    "Enrich": [
+      "FromLogContext",
+      "WithMachineName",
+      "WithThreadId"
+    ]
+  }
+}

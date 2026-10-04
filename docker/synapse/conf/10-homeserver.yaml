@@ -1,0 +1,82 @@
+# Synapse base configuration for bee booking chat — NON-SECRET ONLY.
+#
+# Synapse is pointed at this whole directory (SYNAPSE_CONFIG_PATH=/config) and merges every
+# *.yaml in it in filename order:
+#   10-homeserver.yaml   this file   committed      everything non-secret
+#   99-secrets.yaml      rendered    NOT committed  database password, Synapse's own secrets
+# See ../README.md.
+#
+# ONE instance serves every environment. Environments are separated by appservice namespace
+# (@bee_u_dev_* vs @bee_u_prod_*, #booking-dev-* vs #booking-prod-*), declared exclusive in the
+# registration files below so Synapse itself refuses to let one environment touch another's rooms.
+#
+# server_name is the MXID domain and is PERMANENT — it is baked into every user id, room id and
+# event this homeserver ever creates, and there is no rename. It is set to the homeserver's own
+# hostname, which means NO /.well-known/matrix/client delegation is needed: clients resolve the
+# server straight from an MXID.
+server_name: "matrix.bee-app.tech"
+public_baseurl: "https://matrix.bee-app.tech/"
+
+# Same paths in every environment. The signing key itself is per-homeserver and lives in the data
+# volume — losing it is not recoverable, so it is backed up with the database, not regenerated.
+pid_file: /data/homeserver.pid
+signing_key_path: "/data/signing.key"
+
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    # Behind the reverse proxy, so Synapse must trust X-Forwarded-For for its own rate limiting
+    # and audit logging to see the real client rather than the proxy.
+    x_forwarded: true
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [client]
+        compress: false
+
+# --- Registration: closed, permanently ---
+# Every account is created by the appservice via m.login.application_service. There is no
+# self-service signup, no password login, and no shared registration secret to leak.
+enable_registration: false
+enable_registration_without_verification: false
+enable_3pid_lookup: false
+
+# --- Federation: off ---
+# These rooms are two people and a bot from one platform. Federation would expose booking rooms
+# to remote servers and is pure attack surface here. Note the federation listener (8448) is also
+# simply not defined above.
+federation_domain_whitelist: []
+trusted_key_servers: []
+suppress_key_server_warning: true
+# The apex domain serves /.well-known/matrix/client, not Synapse.
+serve_server_wellknown: false
+
+# --- Presence: off ---
+# "Last seen" for a driver is a location question answered by the Map module, not something we
+# want Synapse computing and fanning out on every sync.
+presence:
+  enabled: false
+
+# One registration file per environment, rendered at deploy time from Vault. Only dev is
+# registered for now. Adding an environment means a file here plus its own
+# MATRIX_ENVIRONMENT_PREFIX - the startup guard refuses to run an enabled environment with no
+# prefix, so it cannot be half-done.
+app_service_config_files:
+  - /config/bee-appservice-dev.yaml
+
+# --- Media ---
+media_store_path: /data/media_store
+max_upload_size: 10M
+# Matches FileUpload:MaxFileSizeBytes on the API side (10 MB).
+url_preview_enabled: false
+
+# --- Retention ---
+# Synapse-side cleanup only. The authoritative transcript is messaging.room_events in bee's
+# Postgres, written by the appservice, and is unaffected by anything here.
+retention:
+  enabled: false
+
+log_config: "/config/log.config"
+report_stats: false
+
+# Sliding sync is native and on by default in current Synapse; nothing to configure.

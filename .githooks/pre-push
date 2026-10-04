@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# Refuses to push directly to a protected branch.
+#
+# Why this exists: a feature branch created with `git checkout -b NAME origin/dev` has its
+# upstream set to origin/dev, so a bare `git push` sends the work straight to dev and silently
+# skips the merge request. That happened on #64 - the work landed on dev with no MR, and there
+# was no record of what changed or why.
+#
+# Enable (once per clone):
+#     git config core.hooksPath .githooks
+#
+# Deliberate override, for the rare case you really mean it:
+#     ALLOW_PROTECTED_PUSH=1 git push origin dev
+#
+set -euo pipefail
+
+PROTECTED_BRANCHES="dev main master"
+
+if [ "${ALLOW_PROTECTED_PUSH:-0}" = "1" ]; then
+    exit 0
+fi
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref being pushed.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Branch deletions arrive with an all-zero local sha; let the server's own rules decide.
+    case "$local_sha" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+
+    remote_branch="${remote_ref#refs/heads/}"
+
+    for protected in $PROTECTED_BRANCHES; do
+        if [ "$remote_branch" = "$protected" ]; then
+            current_branch="$(git rev-parse --abbrev-ref HEAD)"
+            cat >&2 <<EOF
+
+  ✗ Refusing to push directly to '$protected'.
+
+    You are on:      $current_branch
+    Pushing to:      $protected
+
+    Work reaches $protected through a merge request, so that what changed and why is
+    reviewable and recorded on the issue.
+
+    If '$current_branch' is a feature branch, its upstream is probably wrong. Fix it with:
+
+        git push -u origin $current_branch
+
+    That publishes the branch under its own name and repoints the upstream, so future
+    plain 'git push' calls go to the right place. Then open the MR from that branch.
+
+    If you genuinely intend to push to $protected:
+
+        ALLOW_PROTECTED_PUSH=1 git push origin $protected
+
+EOF
+            exit 1
+        fi
+    done
+done
+
+exit 0

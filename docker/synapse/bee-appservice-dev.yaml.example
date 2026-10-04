@@ -1,0 +1,30 @@
+# Application service registration for the **dev** environment.
+# Rendered at deploy time from Vault; the real file is NOT committed.
+#
+# One Synapse serves every environment. What keeps them apart is the `exclusive` namespaces at the
+# bottom of this file: Synapse refuses to let this appservice create or claim a user or alias
+# outside its own prefix, and refuses to let any other appservice touch one inside it. That is a
+# server-enforced boundary, not a convention in our code.
+#
+# Why it matters: BookingNumber is unique only WITHIN a database (unique index,
+# BookingsDbContext.cs:92), and each environment has its own database. Two environments can mint
+# BKG-20260823-000123 on the same day. Room creation adopts an existing alias rather than failing,
+# so without the prefix a dev tester would land inside a real customer's booking chat.
+#
+# The two tokens travel in OPPOSITE directions and must be different values:
+#   as_token — bee-backend → Synapse. Grants the power to act as any user in this namespace.
+#   hs_token — Synapse → bee-backend. The only thing proving an inbound transaction is really
+#              from Synapse and not from anyone who found the endpoint.
+# MatrixOptions.Validate() rejects a config where the two are equal. Every environment gets its
+# OWN pair, so a leaked dev token cannot reach production rooms.
+
+id: bee-appservice-dev
+# Where Synapse pushes room events. Deliberately the PUBLIC hostname, not the LAN address,
+# even though both ends of this hop are on-prem.
+#
+# Dev is meant to exercise the exact path production will use - Cloudflare, TLS, public DNS, WAF -
+# so a bot-protection or routing problem surfaces here rather than ambushing the prod cutover, and
+# so promoting to prod is a copy of something already proven rather than a fresh configuration.
+# The cost is ~400ms per transaction against ~1ms over the LAN; that is background event delivery,
+# not user-facing latency, so it buys the parity cheaply.
+url: https://dev-api.bee-app.tech/appservice

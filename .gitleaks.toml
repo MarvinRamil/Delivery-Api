@@ -1,0 +1,18 @@
+# Gitleaks configuration — extend the default rules, allowlist known false positives.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Sample/docs/third-party paths that are not real secrets"
+paths = [
+  # Restored NuGet packages (third-party code/READMEs with example keys)
+  '''\.nuget/.*''',
+  # Example/placeholder env files (no real secret values)
+  '''\.env\.example''',
+  '''\.env\.example\.local''',
+  '''\.env\.gitlab\.ci''',
+  # Documentation with example tokens
+  '''docs/.*''',
+  # Liveness (face anti-spoofing) is a separate service on its own VM/pipeline
+  '''docker/liveness/.*''',
+]

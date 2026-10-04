@@ -1,0 +1,36 @@
+---
+description: When any API endpoint is added, updated, or removed, or request/response (body, query, status) changes, update the Bee Logistics Postman collection to match.
+globs: "**/Controllers/**/*.cs,**/Presentation/Controllers/**/*.cs,docs/Bee-Logistics-API-Complete.postman_collection.json"
+alwaysApply: false
+---
+
+# Postman collection sync
+
+Whenever you:
+
+- **Add** a new API endpoint (new route, method, or action)
+- **Change** an existing endpoint (URL, HTTP method, route template, or action name)
+- **Change** request body, query parameters, or headers (e.g. new/renamed DTOs or bindings)
+- **Change** response shape or status codes (e.g. new DTO, different status)
+
+you **must** update the Postman collection so it stays in sync with the API.
+
+## Target file
+
+- **Collection:** `docs/Bee-Logistics-API-Complete.postman_collection.json`
+- **Format:** Postman Collection v2.1.0 (schema: `https://schema.getpostman.com/json/collection/v2.1.0/collection.json`)
+
+## What to update
+
+- **New endpoint:** Add a new request under the right folder (e.g. Auth, Bookings, Bookings (Lalamove)), with `method`, `header` (include `Authorization: Bearer {{token}}` for protected routes), `body` (if any), and `url` using `{{base_url}}` and the correct path.
+- **Changed endpoint:** Update the matching request’s `method`, `url`, `header`, or `body` so it matches the controller.
+- **Removed endpoint:** Remove the corresponding request (or folder if it becomes empty) from the collection.
+- Keep collection variables: `base_url` (e.g. `http://localhost:5248`), `token`.
+
+## Checklist
+
+After changing any controller or endpoint contract, before finishing:
+
+1. Open or reference `docs/Bee-Logistics-API-Complete.postman_collection.json`.
+2. Add, update, or remove the request(s) so the collection matches the API.
+3. Ensure JSON remains valid (balanced braces, quoted keys, valid escape sequences).

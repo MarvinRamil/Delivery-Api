@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BeeLogistics.Shared\BeeLogistics.Shared.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Identity\BeeLogistics.Modules.Identity.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Payment\BeeLogistics.Modules.Payment.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Bookings\BeeLogistics.Modules.Bookings.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Revenue\BeeLogistics.Modules.Revenue.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Modules.Verification\BeeLogistics.Modules.Verification.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="MassTransit.Abstractions" Version="8.5.7" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Composited into the middle of BeePay QR codes. Embedded rather than read from disk so it
+         travels with the assembly and cannot go missing in a container image. -->
+    <EmbeddedResource Include="Application\Assets\bee-logo.png" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
+

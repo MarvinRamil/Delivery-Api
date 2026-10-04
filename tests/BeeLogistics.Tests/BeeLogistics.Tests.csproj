@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="MockQueryable.NSubstitute" Version="7.0.3" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="ZXing.Net" Version="0.16.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BeeLogistics.Shared\BeeLogistics.Shared.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Payment\BeeLogistics.Modules.Payment.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Bookings\BeeLogistics.Modules.Bookings.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.CRM\BeeLogistics.Modules.CRM.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Drivers\BeeLogistics.Modules.Drivers.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Map\BeeLogistics.Modules.Map.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Identity\BeeLogistics.Modules.Identity.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Integration\BeeLogistics.Modules.Integration.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Notification\BeeLogistics.Modules.Notification.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Verification\BeeLogistics.Modules.Verification.csproj" />
+    <!-- Accounting is not reachable transitively (nothing else references it), but the ledger
+         double-entry guard needs covering directly. Revenue arrives via Drivers. -->
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Accounting\BeeLogistics.Modules.Accounting.csproj" />
+    <ProjectReference Include="..\..\src\Modules\BeeLogistics.Modules.Messaging\BeeLogistics.Modules.Messaging.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,1295 @@
+# GitLab CI/CD Pipeline for Bee Logistics Backend
+# Multi-environment deployment: dev, staging, production (main branch)
+# Manual deployment with play button
+
+# When pipelines run (catch defects early):
+# - Push to main, dev, or staging: full pipeline for that branch (security → restore → build → sast → publish → docker).
+# - Merge Request (MR) into main, dev, or staging: pipeline runs security + restore → build → sast → publish (no env-specific prepare/docker/deploy).
+# You will see the pipeline under Build → Pipelines (and on the MR page).
+
+# Security checks (all branches + MRs): Gitleaks (secrets), Checkov (Dockerfile IAC), SAST (vulnerable NuGet).
+# Docker builds (dev/staging/main): Trivy CVE scan + Syft SBOM on the built image.
+
+# Runner routing: the whole pipeline runs on the runner tag picked below.
+# - main (production): runner tagged `production`
+# - dev / staging / MRs: runner tagged `dev` (temporary — change RUNNER_TAG below when the
+#   dedicated dev/staging runner tags are ready)
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      variables:
+        RUNNER_TAG: "production"
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        RUNNER_TAG: "dev"
+    - if: $CI_COMMIT_BRANCH == "staging"
+      variables:
+        RUNNER_TAG: "dev"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      variables:
+        RUNNER_TAG: "dev"
+
+default:
+  tags:
+    - $RUNNER_TAG
+
+stages:
+  - prepare
+  - security
+  - restore
+  - build
+  - test
+  - sast
+  - publish
+  - docker
+  - deploy
+  # - dast  # disabled for now — see commented DAST section at the bottom
+
+variables:
+  # Build Configuration (non-sensitive, shared across environments)
+  DOTNET_VERSION: "10.0"
+  # Single source of truth for the .NET image tag: the SDK that compiles the app and the
+  # runtime base image in Dockerfile.ci must be the same tag, otherwise the published app
+  # will not start. Change both by changing this.
+  DOTNET_IMAGE_TAG: "10.0-preview"
+  SOLUTION_FILE: "bee-app-backend.sln"
+  API_PROJECT: "src/BeeLogistics.Api/BeeLogistics.Api.csproj"
+  TEST_PROJECT: "tests/BeeLogistics.Tests/BeeLogistics.Tests.csproj"
+  PUBLISH_OUTPUT_DIR: "publish"
+  DOCKER_IMAGE_NAME: "beelogistics-api"
+
+  # Every dotnet invocation shares one NuGet package directory, bind-mounted from the
+  # runner host at /nuget so it persists across jobs and pipelines. Previously only the
+  # `restore` job used .nuget/ and every other job re-downloaded packages into
+  # ~/.nuget/packages, which nothing ever cached.
+  NUGET_PACKAGES: "/nuget"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+  # Non-sensitive shared config
+  JWT_ISSUER: "BeeLogisticsApi"
+  JWT_AUDIENCE: "BeeLogisticsClient"
+  JWT_EXPIRY_MINUTES: "60"
+  EMAIL_USE_SSL: "true"
+  MQTT_USE_SSL: "false"
+  MQTT_IGNORE_CERTIFICATE_ERRORS: "true"
+  RABBITMQ_PORT: "5672"
+
+  # ============================================
+  # SECRETS now come from HashiCorp Vault (KV v2 secret `bee/config`).
+  # The container only authenticates to Vault and fetches them at startup.
+  # ============================================
+  # GitLab CI/CD Variables required (Settings > CI/CD > Variables) — full list in .env.gitlab.ci:
+  #   VAULT_ADDRESS         (e.g. https://10.10.10.117:8200)
+  #   VAULT_ROLE_ID         (AppRole role_id; scope per environment; Masked)
+  #   VAULT_SECRET_ID       (AppRole secret_id; scope per environment; Masked, Protected)
+  #   VAULT_SKIP_TLS_VERIFY (true for dev/staging self-signed; false once Vault has a trusted cert)
+  #   RABBITMQ_USER         (used to CREATE the rabbitmq container; MUST match Vault bee/config)
+  #   RABBITMQ_PASSWORD     (used to CREATE the rabbitmq container; MUST match Vault bee/config)
+  #
+  # NO LONGER set here (moved to Vault bee/config): POSTGRES_*, JWT_SECRET, EMAIL_PASSWORD,
+  # XENDIT_API_KEY, XENDIT_WEBHOOK_TOKEN, S3_ACCESS_KEY, S3_SECRET_KEY, DIGITALOCEAN_ACCESS_KEY,
+  # DIGITALOCEAN_SECRET_KEY, ZAMMAD_API_TOKEN,
+  # ZAMMAD_WEBHOOK_SECRET, MQTT_USERNAME, MQTT_PASSWORD, PHILSMS_API_TOKEN, SMS_ILOCOS_API_KEY,
+  # SEED_DEFAULT_PASSWORD, and the PayMongo secrets: PayMongo__SecretKey, PayMongo__WebhookSecret,
+  # PayMongo__SourceAccountNumber, PayMongo__SourceAccountName, PayMongo__SourceAccountBic.
+  #
+  # IMPORTANT: each environment's Vault bee/config must hold THAT environment's values
+  # (its own DB connection string, Redis connstring, RabbitMQ creds, etc.).
+  # ============================================
+
+# NOTE: there is deliberately no `cache:` block.
+#
+# NuGet packages live on a host directory bind-mounted into every job at /nuget
+# (see NUGET_PACKAGES above and the runner's [runners.docker] volumes). That is faster
+# than GitLab's cache — nothing is zipped, uploaded or downloaded — and it sidesteps the
+# whole class of problems that made the previous cache unreliable: cache volume naming,
+# protected/unprotected key segregation, and runner volume cleanup (volume_keep).
+#
+# The runner requires:
+#   volumes = ["/srv/gitlab-runner/nuget:/nuget", "/var/run/docker.sock:/var/run/docker.sock"]
+
+# Guard for every job that runs dotnet with --no-restore.
+#
+# Populates /nuget on first ever use, and keeps the pipeline correct if the mount is
+# missing or has been emptied — without it, dotnet fails with NETSDK1064 (package not
+# found) rather than just running slower. In steady state this is a no-op.
+.dotnet_restore_guard: &dotnet_restore_guard
+  - |
+    if [ ! -d "$NUGET_PACKAGES" ] || [ -z "$(ls -A "$NUGET_PACKAGES" 2>/dev/null)" ]; then
+      echo "NuGet packages missing at $NUGET_PACKAGES — restoring inline. If you see this on every job, the runner's /nuget bind mount is not configured."
+      dotnet restore "$SOLUTION_FILE"
+    else
+      echo "NuGet cache hit at $NUGET_PACKAGES"
+    fi
+
+# ============================================
+# PREPARE STAGE - Generate environment config
+# ============================================
+
+prepare:env:dev:
+  stage: prepare
+  image: alpine:latest
+  script:
+    - echo "ENV_NAME=dev" > build.env
+    - echo "ASPNETCORE_ENVIRONMENT=Development" >> build.env
+    - echo "POSTGRES_DB=bee_logistics_db_dev" >> build.env
+    - echo "API_PORT=8081" >> build.env
+    - echo "CONTAINER_NAME=beeapp-backend-dev" >> build.env
+    - echo "DOCKER_TAG=dev" >> build.env
+    - echo "MQTT_ENV=dev" >> build.env
+    - echo "MQTT_LOCATION_TOPIC=dev/beelogistics/drivers/+/location" >> build.env
+    # Shared broker/cache across all environments (temporary)
+    - echo "REDIS_CONTAINER=beeapp-redis" >> build.env
+    - echo "REDIS_PORT=6379" >> build.env
+    - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq" >> build.env
+    # Future reference (per-environment isolation):
+    # - echo "REDIS_CONTAINER=beeapp-redis-dev" >> build.env
+    # - echo "REDIS_PORT=6379" >> build.env
+    # - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq-dev" >> build.env
+    - echo "FRONTEND_URL=https://dev.bee-app.tech" >> build.env
+    - echo "BACKOFFICE_URL=https://dev-backoffice.bee-app.tech" >> build.env
+    - echo "API_URL=https://dev-api.bee-app.tech" >> build.env
+    - echo "FRONTEND_URL_DEV=http://localhost:3002" >> build.env
+    - echo "BACKOFFICE_URL_DEV=http://localhost:3005" >> build.env
+    - echo "PROXIMITY_RADIUS_KM=${PROXIMITY_RADIUS_KM:-35}" >> build.env
+    - cat build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+prepare:env:staging:
+  stage: prepare
+  image: alpine:latest
+  script:
+    - echo "ENV_NAME=staging" > build.env
+    - echo "ASPNETCORE_ENVIRONMENT=Staging" >> build.env
+    - echo "POSTGRES_DB=bee_logistics_db_uat" >> build.env
+    - echo "API_PORT=8082" >> build.env
+    - echo "CONTAINER_NAME=beeapp-backend-staging" >> build.env
+    - echo "DOCKER_TAG=staging" >> build.env
+    - echo "MQTT_ENV=staging" >> build.env
+    - echo "MQTT_LOCATION_TOPIC=staging/beelogistics/drivers/+/location" >> build.env
+    # Shared broker/cache across all environments (temporary)
+    - echo "REDIS_CONTAINER=beeapp-redis" >> build.env
+    - echo "REDIS_PORT=6379" >> build.env
+    - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq" >> build.env
+    # Future reference (per-environment isolation):
+    # - echo "REDIS_CONTAINER=beeapp-redis-staging" >> build.env
+    # - echo "REDIS_PORT=6380" >> build.env
+    # - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq-staging" >> build.env
+    - echo "FRONTEND_URL=https://staging.bee-app.tech" >> build.env
+    - echo "BACKOFFICE_URL=https://staging-backoffice.bee-app.tech" >> build.env
+    - echo "API_URL=https://staging-api.bee-app.tech" >> build.env
+    - echo "FRONTEND_URL_DEV=http://localhost:3003" >> build.env
+    - echo "BACKOFFICE_URL_DEV=http://localhost:3006" >> build.env
+    - echo "PROXIMITY_RADIUS_KM=${PROXIMITY_RADIUS_KM:-35}" >> build.env
+    - cat build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+
+prepare:env:production:
+  stage: prepare
+  image: alpine:latest
+  script:
+    - echo "ENV_NAME=production" > build.env
+    - echo "ASPNETCORE_ENVIRONMENT=Production" >> build.env
+    - echo "POSTGRES_DB=bee_logistics_db_prod" >> build.env
+    - echo "API_PORT=8083" >> build.env
+    - echo "CONTAINER_NAME=beeapp-backend-prod" >> build.env
+    - echo "DOCKER_TAG=production" >> build.env
+    - echo "MQTT_ENV=production" >> build.env
+    - echo "MQTT_LOCATION_TOPIC=production/beelogistics/drivers/+/location" >> build.env
+    # Shared broker/cache across all environments (temporary)
+    - echo "REDIS_CONTAINER=beeapp-redis" >> build.env
+    - echo "REDIS_PORT=6379" >> build.env
+    - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq" >> build.env
+    # Future reference (per-environment isolation):
+    # - echo "REDIS_CONTAINER=beeapp-redis-prod" >> build.env
+    # - echo "REDIS_PORT=6379" >> build.env
+    # - echo "RABBITMQ_CONTAINER=beeapp-rabbitmq-prod" >> build.env
+    - echo "FRONTEND_URL=https://mybeeapp.com" >> build.env
+    - echo "BACKOFFICE_URL=https://backoffice.mybeeapp.com" >> build.env
+    - echo "API_URL=https://api.bee-app.tech" >> build.env
+    - echo "PROXIMITY_RADIUS_KM=${PROXIMITY_RADIUS_KM:-35}" >> build.env
+    - cat build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ============================================
+# SECURITY STAGE - Secrets scan, IAC scan (all branches + MRs)
+# ============================================
+
+# ============================================
+# REVIEW APPS - one environment per merge request, at <mr-iid>.bee-app.tech
+# ============================================
+# Routing needs no CI involvement: the container declares VIRTUAL_HOST and nginx-proxy on the
+# app server picks it up off the Docker socket. A stopped container drops out of routing by
+# itself, so there is no per-MR proxy config to create, and none to leak when a stop job fails.
+#
+#   Cloudflare (*.bee-app.tech, proxied) -> NPM wildcard host -> 10.10.10.3:80 (nginx-proxy)
+#     -> beeapp-backend-review-<iid> on beeapp-network
+prepare:env:review:
+  stage: prepare
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git >/dev/null
+  script:
+    # Only genuinely computed values go in build.env. GitLab caps a dotenv artifact at 20
+    # variables, and per-environment constants live in deploy:review's own variables: block.
+    - echo "ENV_NAME=review-${CI_MERGE_REQUEST_IID}" > build.env
+    - echo "CONTAINER_NAME=beeapp-backend-review-${CI_MERGE_REQUEST_IID}" >> build.env
+    - echo "DOCKER_TAG=mr-${CI_MERGE_REQUEST_IID}" >> build.env
+    # The api- prefix namespaces this project. bee-backend and bee-frontend are separate
+    # GitLab projects with independent MR numbering, so a bare <iid>.bee-app.tech would let
+    # backend !107 and frontend !107 claim one hostname - whichever deployed last silently
+    # taking it. Frontend review apps use web-<iid>.
+    - echo "VIRTUAL_HOST=api-${CI_MERGE_REQUEST_IID}.bee-app.tech" >> build.env
+    - echo "API_URL=https://api-${CI_MERGE_REQUEST_IID}.bee-app.tech" >> build.env
+    # Its own broker vhost, so a review app cannot compete with dev for the same queues.
+    # MassTransit derives queue names from consumer type names, so without this every open MR
+    # would bind dev's queues and RabbitMQ would round-robin messages between them.
+    - echo "RABBITMQ_VHOST=review-${CI_MERGE_REQUEST_IID}" >> build.env
+    - echo "SIGNALR_CHANNEL_PREFIX=BeeLogistics:signalr:review-${CI_MERGE_REQUEST_IID}:" >> build.env
+    # Subscribes to a topic nobody publishes to, so a review app does not double-ingest dev's
+    # driver locations into the shared database. Location testing is therefore not available in
+    # a review app unless a driver build is pointed at this topic.
+    - echo "MQTT_ENV=review-${CI_MERGE_REQUEST_IID}" >> build.env
+    - echo "MQTT_LOCATION_TOPIC=review-${CI_MERGE_REQUEST_IID}/beelogistics/drivers/+/location" >> build.env
+    - |
+      # Share dev's database, EXCEPT when this MR changes the schema.
+      #
+      # A review app runs MigrateAsync() at startup against whatever database it points at. An MR
+      # that adds a migration would therefore apply it to the real dev database before review --
+      # and if that MR is then revised or abandoned, dev is left carrying a schema change that
+      # exists on no branch. EF does not complain, so it surfaces later as a confusing mismatch.
+      #
+      # So: no migrations -> share dev and get real data for free. Migrations -> isolated database,
+      # created by EF on first boot and dropped by stop:review.
+      git fetch --quiet origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" || true
+      if git diff --name-only "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" | grep -q '/Migrations/'; then
+        echo "This MR changes the schema -> isolated database"
+        echo "POSTGRES_DB=bee_review_${CI_MERGE_REQUEST_IID}" >> build.env
+        echo "OWNS_DATABASE=true" >> build.env
+      else
+        echo "No migration changes -> sharing bee_logistics_db_dev"
+        echo "POSTGRES_DB=bee_logistics_db_dev" >> build.env
+        echo "OWNS_DATABASE=false" >> build.env
+      fi
+    - cat build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+docker:build:review:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: publish
+      artifacts: true
+    - job: prepare:env:review
+      artifacts: true
+  script:
+    - echo "Building image for MR !${CI_MERGE_REQUEST_IID}..."
+    - docker build -f Dockerfile.ci --build-arg DOTNET_IMAGE_TAG=${DOTNET_IMAGE_TAG} -t ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} ${PUBLISH_OUTPUT_DIR}
+    - docker images | grep ${DOCKER_IMAGE_NAME}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+deploy:review:
+  stage: deploy
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    # Per-environment constants. Kept out of the dotenv artifact deliberately - GitLab caps that
+    # at 20 variables, and these are fixed values rather than anything prepare computes.
+    ASPNETCORE_ENVIRONMENT: "Development"
+    REDIS_CONTAINER: "beeapp-redis"
+    REDIS_PORT: "6379"
+    RABBITMQ_CONTAINER: "beeapp-rabbitmq"
+    FRONTEND_URL: "https://dev.bee-app.tech"
+    BACKOFFICE_URL: "https://dev-backoffice.bee-app.tech"
+    FRONTEND_URL_DEV: "http://localhost:3002"
+    BACKOFFICE_URL_DEV: "http://localhost:3005"
+    # Matrix is OFF for review apps. Only dev has an appservice registered on the homeserver, and
+    # a review app sharing dev's database would provision rooms into dev's @bee_u_dev_* namespace.
+    # Per-MR chat would need a registration per MR, which is not practical.
+    MATRIX_ENABLED: "false"
+    # Tag review-app errors so they are filterable in GlitchTip and do not read as dev noise.
+    # The DSN itself still comes from Vault (bee/config), like every other environment.
+    SENTRY_ENVIRONMENT: "review-$CI_MERGE_REQUEST_IID"
+  needs:
+    - job: docker:build:review
+    - job: prepare:env:review
+      artifacts: true
+  environment:
+    name: review/$CI_MERGE_REQUEST_IID
+    url: https://api-$CI_MERGE_REQUEST_IID.bee-app.tech
+    on_stop: stop:review
+    # An abandoned MR must not hold a container and a database indefinitely. The Proxmox host runs
+    # 1.66x RAM overcommit, so unbounded review apps would eat the balloon headroom.
+    auto_stop_in: 3 days
+  script:
+    - echo "Deploying review app for MR !${CI_MERGE_REQUEST_IID} -> https://${VIRTUAL_HOST}"
+    - echo "Database - ${POSTGRES_DB} (owned by this MR - ${OWNS_DATABASE})"
+    - docker network create beeapp-network || true
+    - docker start ${REDIS_CONTAINER} || true
+    - docker start ${RABBITMQ_CONTAINER} || true
+    - docker exec ${RABBITMQ_CONTAINER} rabbitmqctl add_vhost "${RABBITMQ_VHOST}" || true
+    - |
+      # Same grant as deploy:dev: every user that exists in the broker. The app's credentials come
+      # from Vault and CI cannot see them, so "whoever exists" is the only reliable rule.
+      # --no-table-headers matters: -q alone still prints the column header.
+      RMQ="docker exec ${RABBITMQ_CONTAINER} rabbitmqctl"
+      USERS=$($RMQ -q --no-table-headers list_users 2>/dev/null | awk '{print $1}' | grep -v '^$' || true)
+      if [ -z "$USERS" ]; then
+        USERS=$($RMQ -q list_users | awk 'NR>1 {print $1}' | grep -v '^$' || true)
+      fi
+      GRANTED=0
+      for u in $USERS; do
+        $RMQ set_permissions -p "${RABBITMQ_VHOST}" "$u" ".*" ".*" ".*" && GRANTED=$((GRANTED+1)) || true
+      done
+      if [ "$GRANTED" -eq 0 ]; then
+        echo "Could not grant any user on vhost '${RABBITMQ_VHOST}'; the app could not reach the broker."
+        exit 1
+      fi
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    # Hangfire__EnableServer follows OWNS_DATABASE: a review app sharing bee_logistics_db_dev shares
+    # its hangfire schema too, and a second Hangfire server there works on data it does not own (#98).
+    - echo "Starting review container (secrets come from Vault)..."
+    # NOTE: no comments inside the `docker run ... \` continuation below. A "#" line after a
+    # trailing backslash ends the command there and silently drops the rest, image included.
+    - |
+      docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
+        -e "VIRTUAL_HOST=${VIRTUAL_HOST}" -e "VIRTUAL_PORT=8080" \
+        -e ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT} -e ASPNETCORE_URLS=http://+:8080 \
+        -e "Hangfire__EnableServer=${OWNS_DATABASE:-false}" \
+        -e "Vault__Address=${VAULT_ADDRESS}" -e "Vault__RoleId=${VAULT_ROLE_ID}" -e "Vault__SecretId=${VAULT_SECRET_ID}" -e "Vault__SkipTlsVerify=${VAULT_SKIP_TLS_VERIFY:-true}" \
+        -e "Cors__AllowedOrigins__0=${FRONTEND_URL}" -e "Cors__AllowedOrigins__1=${BACKOFFICE_URL}" -e "Cors__AllowedOrigins__2=${FRONTEND_URL_DEV}" -e "Cors__AllowedOrigins__3=${BACKOFFICE_URL_DEV}" -e "Cors__AllowedOrigins__4=${API_URL}" \
+        -e "ConnectionStrings__Redis=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}${REDIS_DB:+,defaultDatabase=${REDIS_DB}}" -e "Redis__ConnectionString=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}${REDIS_DB:+,defaultDatabase=${REDIS_DB}}" \
+        -e "JwtSettings__Issuer=${JWT_ISSUER}" -e "JwtSettings__Audience=${JWT_AUDIENCE}" -e "JwtSettings__ExpiryMinutes=${JWT_EXPIRY_MINUTES}" \
+        -e "Email__Host=${EMAIL_HOST}" -e "Email__Port=${EMAIL_PORT}" -e "Email__Username=${EMAIL_USERNAME}" -e "Email__From=${EMAIL_FROM}" -e "Email__UseSsl=${EMAIL_USE_SSL}" \
+        -e "Payments__ActiveGateway=${PAYMENTS_ACTIVE_GATEWAY:-paymongo}" \
+        -e "PayMongo__BaseUrl=${PAYMONGO_BASE_URL:-https://api.paymongo.com/}" \
+        -e "PayMongo__CheckoutSuccessUrl=${PAYMONGO_CHECKOUT_SUCCESS_URL}" -e "PayMongo__CheckoutCancelUrl=${PAYMONGO_CHECKOUT_CANCEL_URL}" \
+        -e "PayMongo__DefaultTransferProvider=${PAYMONGO_TRANSFER_PROVIDER:-instapay}" \
+        -e "Xendit__BaseUrl=${XENDIT_BASE_URL:-https://api.xendit.co/}" \
+        -e "RabbitMQ__Host=${RABBITMQ_CONTAINER}" -e "RabbitMQ__Port=${RABBITMQ_PORT}" -e "RabbitMQ__VirtualHost=${RABBITMQ_VHOST}" -e "SignalR__ChannelPrefix=${SIGNALR_CHANNEL_PREFIX}" \
+        -e "Mqtt__Host=${MQTT_HOST}" -e "Mqtt__Port=${MQTT_PORT}" -e "Mqtt__UseSsl=${MQTT_USE_SSL}" -e "Mqtt__IgnoreCertificateErrors=${MQTT_IGNORE_CERTIFICATE_ERRORS}" -e "Mqtt__Environment=${MQTT_ENV}" -e "Mqtt__LocationTopic=${MQTT_LOCATION_TOPIC}" \
+        -e "ClamAV__Enabled=${CLAMAV_ENABLED:-true}" -e "ClamAV__Host=${CLAMAV_HOST:-localhost}" -e "ClamAV__Port=${CLAMAV_PORT:-3310}" -e "ClamAV__TimeoutSeconds=${CLAMAV_TIMEOUT_SECONDS:-30}" \
+        -e "S3__Endpoint=${S3_ENDPOINT:-}" -e "S3__CdnEndpoint=${S3_CDN_ENDPOINT:-}" -e "S3__Region=${S3_REGION:-auto}" -e "S3__UseSSL=${S3_USE_SSL:-true}" -e "S3__BucketName=${S3_BUCKET_NAME:-}" -e "S3__ObjectKeyPrefix=${S3_OBJECT_KEY_PREFIX:-}" \
+        -e "DigitalOcean__Endpoint=${DIGITALOCEAN_ENDPOINT:-}" -e "DigitalOcean__CdnEndpoint=${DIGITALOCEAN_CDN_ENDPOINT:-}" -e "DigitalOcean__Region=${DIGITALOCEAN_REGION:-sgp1}" -e "DigitalOcean__UseSSL=${DIGITALOCEAN_USE_SSL:-true}" -e "DigitalOcean__BucketName=${DIGITALOCEAN_BUCKET_NAME:-}" -e "DigitalOcean__ObjectKeyPrefix=${DIGITALOCEAN_OBJECT_KEY_PREFIX:-}" \
+        -e "FileStorage__Provider=${FILE_STORAGE_PROVIDER:-DigitalOcean}" \
+        -e "Zammad__BaseUrl=${ZAMMAD_BASE_URL:-http://10.10.10.91:9080}" -e "Zammad__Enabled=${ZAMMAD_ENABLED:-true}" \
+        -e "Matrix__Enabled=${MATRIX_ENABLED:-false}" -e "Matrix__HomeserverUrl=${MATRIX_HOMESERVER_URL}" -e "Matrix__PublicHomeserverUrl=${MATRIX_PUBLIC_HOMESERVER_URL:-}" -e "Matrix__ServerName=${MATRIX_SERVER_NAME:-}" -e "Matrix__EnvironmentPrefix=${MATRIX_ENVIRONMENT_PREFIX:-}" -e "Matrix__AppServiceId=${MATRIX_APPSERVICE_ID:-}" -e "Matrix__SenderLocalpart=${MATRIX_SENDER_LOCALPART:-}" -e "Matrix__AdminApiUrl=${MATRIX_ADMIN_API_URL:-}" \
+        -e "SEQ_SERVER_URL=${SEQ_SERVER_URL:-}" \
+        -e "Sentry__Dsn=${SENTRY_DSN:-}" -e "SENTRY_RELEASE=${CI_COMMIT_SHORT_SHA}" -e "SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT}" \
+        -e "Serilog__MinimumLevel__Override__Sentry=${SERILOG_SENTRY_LEVEL:-Warning}" \
+        -e "Sms__Providers__IlocosSms__ApiBaseUrl=${SMS_ILOCOS_API_BASE_URL:-https://sms.ilocosscript.live}" -e "Sms__Providers__PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "Sms__Providers__PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "BookingSettings__ProximityRadiusKm=${PROXIMITY_RADIUS_KM:-35}" \
+        -e "BookingSettings__ScheduledClaimLeadMinutes=${SCHEDULED_CLAIM_LEAD_MINUTES:-45}" \
+        -e "BookingSettings__MaxActiveBookingsPerDriver=${MAX_ACTIVE_BOOKINGS_PER_DRIVER:-3}" \
+        -e "BookingSettings__MaxScheduledClaimsPerDriver=${MAX_SCHEDULED_CLAIMS_PER_DRIVER:-5}" \
+        -e "DriverWallet__PlatformCommissionRate=${PLATFORM_COMMISSION_RATE:-0.05}" \
+        -e "Pricing__DeliveryModes__Regular__Multiplier=${MODE_REGULAR_MULTIPLIER:-1.05}" \
+        -e "Pricing__DeliveryModes__OnDemand__Multiplier=${MODE_ONDEMAND_MULTIPLIER:-1.25}" \
+        -e "Pricing__DeliveryModes__OnDemand__FlatFee=${MODE_ONDEMAND_FLAT_FEE:-0}" \
+        -e "Pricing__DeliveryModes__OnDemand__MinFee=${MODE_ONDEMAND_MIN_FEE:-20}" \
+        -e "Pricing__DeliveryModes__OnDemand__MaxFee=${MODE_ONDEMAND_MAX_FEE:-500}" \
+        -e "Pricing__DeliveryModes__Pooling__DiscountRate=${MODE_POOLING_DISCOUNT_RATE:-0}" \
+        -e "Pricing__DeliveryModes__Pooling__MaxDiscount=${MODE_POOLING_MAX_DISCOUNT:-0}" \
+        -e "Pricing__FareTrust__Enforce=${FARE_TRUST_ENFORCE:-false}" \
+        -e "Pricing__FareTrust__ToleranceAbsolute=${FARE_TRUST_TOLERANCE_ABSOLUTE:-25.00}" \
+        -e "Pricing__FareTrust__ToleranceRate=${FARE_TRUST_TOLERANCE_RATE:-0.10}" \
+        -e "BookingSettings__MaxBookingsPerPulseTick=${MAX_BOOKINGS_PER_PULSE_TICK:-200}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3InitialSearchRadiusKm=${MODE_ONDEMAND_H3_INITIAL_KM:-7}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3MaxSearchRadiusKm=${MODE_ONDEMAND_H3_MAX_KM:-12}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalFreshSeconds=${MODE_ONDEMAND_PULSE_FRESH:-5}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalWarmSeconds=${MODE_ONDEMAND_PULSE_WARM:-10}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalCoolSeconds=${MODE_ONDEMAND_PULSE_COOL:-20}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalStaleSeconds=${MODE_ONDEMAND_PULSE_STALE:-45}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationManyDriversMinutes=${MODE_ONDEMAND_TTL_MANY:-1}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationFewDriversMinutes=${MODE_ONDEMAND_TTL_FEW:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__NoDriverRetryMinutes=${MODE_ONDEMAND_NO_DRIVER_RETRY:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWeight=${MODE_ONDEMAND_QUALITY_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWindowDays=${MODE_ONDEMAND_QUALITY_WINDOW_DAYS:-14}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreMinSamples=${MODE_ONDEMAND_QUALITY_MIN_SAMPLES:-5}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxBroadcastMinutes=${MODE_POOLING_MAX_BROADCAST_MINUTES:-25}" \
+        -e "BookingSettings__DeliveryModes__Pooling__OfferExpirationFewDriversMinutes=${MODE_POOLING_TTL_FEW:-8}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PulseIntervalWarmSeconds=${MODE_POOLING_PULSE_WARM:-60}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingScoreWeight=${MODE_POOLING_SCORE_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxDetourKm=${MODE_POOLING_MAX_DETOUR_KM:-4.0}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingCandidateLimit=${MODE_POOLING_CANDIDATE_LIMIT:-45}" \
+        -e "Features__DisableRateLimiting=${FEATURES__DISABLE_RATE_LIMITING:-true}" \
+        -e "Location__UpdateBurstAllowance=${LOCATION_UPDATE_BURST_ALLOWANCE:-0}" \
+        --network beeapp-network ${DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+    - echo "Review app is live at https://${VIRTUAL_HOST}"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+stop:review:
+  stage: deploy
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    # The branch is usually already deleted by the time this runs.
+    GIT_STRATEGY: none
+    RABBITMQ_CONTAINER: "beeapp-rabbitmq"
+  # Deliberately NO `needs: prepare:env:review`. GitLab can trigger this weeks later, on merge or
+  # branch delete or the auto_stop timer, by which point that job's artifacts may have expired -
+  # and a teardown that cannot name what it should delete leaves the container running forever.
+  # Every name below is derived from the MR id instead, so this job is self-sufficient.
+  environment:
+    name: review/$CI_MERGE_REQUEST_IID
+    action: stop
+  script:
+    - |
+      # CI_MERGE_REQUEST_IID is normally present; fall back to the environment name (review/<iid>)
+      # for the auto-triggered case, where the MR context is not always populated.
+      IID="${CI_MERGE_REQUEST_IID:-${CI_ENVIRONMENT_NAME##*/}}"
+      if [ -z "$IID" ]; then
+        echo "Cannot determine the MR id, so cannot identify what to tear down."
+        exit 1
+      fi
+      echo "Tearing down the review app for MR !${IID}..."
+
+      docker rm -f "beeapp-backend-review-${IID}" || true
+      docker rmi "${DOCKER_IMAGE_NAME}:mr-${IID}" || true
+      docker exec "${RABBITMQ_CONTAINER}" rabbitmqctl delete_vhost "review-${IID}" || true
+
+      # Safe unconditionally: bee_review_<iid> exists only if this MR owned a database. An MR that
+      # shared bee_logistics_db_dev never created one, so this is a no-op for it - and because the
+      # name is DERIVED rather than passed in, it can never resolve to the shared dev database.
+      docker run --rm -e PGPASSWORD="${POSTGRES_PASSWORD}" postgres:17-alpine \
+        psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d postgres \
+        -c "DROP DATABASE IF EXISTS \"bee_review_${IID}\" WITH (FORCE);" || true
+
+      echo "Review app for MR !${IID} removed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+
+secrets:scan:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  needs: []
+  script:
+    - gitleaks detect --source . --no-git --verbose
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+checkov:iac:
+  stage: security
+  image:
+    name: bridgecrew/checkov:latest
+    entrypoint: [""]
+  needs: []
+  script:
+    - checkov -d . --framework dockerfile --output cli --soft-fail --skip-path docker/liveness
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# Dockerfile best-practices / hardening lint (Hadolint). Report-only.
+dockerfile:lint:
+  stage: security
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [""]
+  needs: []
+  script:
+    - hadolint --failure-threshold error Dockerfile Dockerfile.ci Dockerfile.dev
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# Filesystem scan of the repo: dependency vulns + IaC misconfig + secrets (Trivy). Report-only.
+fs:scan:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  needs: []
+  script:
+    - trivy fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 0 --no-progress --skip-dirs docker/liveness .
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# ============================================
+# BUILD STAGES
+# ============================================
+
+# The only job that restores. Everything downstream runs --no-restore and gets the
+# packages from the cache plus the project.assets.json files from this job's artifacts.
+restore:
+  stage: restore
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_IMAGE_TAG}
+  script:
+    - echo "Restoring NuGet packages..."
+    # Target dir comes from $NUGET_PACKAGES so there is a single knob to change if the
+    # packages move to a host bind mount.
+    - dotnet restore $SOLUTION_FILE
+  artifacts:
+    # obj/ at this point holds only the restore output (project.assets.json,
+    # *.nuget.g.props/targets) — a few hundred KB, not build output.
+    paths:
+      - "**/obj/"
+    expire_in: 1 hour
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# Whole-solution compile, kept as a safety net only: it catches any project that is in
+# the .sln but not reachable from either the API or the test graph. Today that set is
+# empty (the .sln is in fact stale — it lists 14 projects while the API alone references
+# 17 modules), so this job is currently redundant with publish+test. It is cheap to keep
+# because it no longer sits on the critical path: it produces no artifacts and runs in
+# parallel with test/sast/publish rather than ahead of them.
+build:
+  stage: build
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_IMAGE_TAG}
+  needs:
+    - job: restore
+      artifacts: true
+  before_script: *dotnet_restore_guard
+  script:
+    - echo "Building solution..."
+    - dotnet build $SOLUTION_FILE --configuration Release --no-restore
+    - echo "Build completed successfully!"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# ============================================
+# TEST STAGE - Unit tests + coverage (xUnit + Coverlet)
+# ============================================
+# NOTE: this job is a real gate (no allow_failure) — a failing test blocks the
+# pipeline (and therefore the manual deploy). Set allow_failure: true to make it report-only.
+test:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_IMAGE_TAG}
+  needs:
+    - job: restore
+      artifacts: true
+  before_script: *dotnet_restore_guard
+  script:
+    - echo "Running unit tests with coverage..."
+    # --settings applies coverlet.runsettings, which excludes **/Migrations/** and the test
+    # assemblies. Without it those exclusions were ignored and the reported coverage was diluted
+    # by generated migration code that no one tests.
+    - dotnet test $TEST_PROJECT --configuration Release --no-restore --settings coverlet.runsettings --collect:"XPlat Code Coverage" --results-directory ./TestResults --logger "console;verbosity=normal"
+  coverage: '/Total\s*\|\s*(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    paths:
+      - ./TestResults/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: "**/coverage.cobertura.xml"
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# ============================================
+# SAST STAGE - Vulnerable NuGet packages + Semgrep source analysis
+# ============================================
+
+sast:
+  stage: sast
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_IMAGE_TAG}
+  # `dotnet list package --vulnerable` reads project.assets.json, so it needs the
+  # restore output only — waiting on a full build was pure dead time.
+  needs:
+    - job: restore
+      artifacts: true
+  before_script: *dotnet_restore_guard
+  script:
+    - echo "Running SAST security scan for .NET..."
+    - echo "Checking for vulnerable NuGet packages..."
+    - dotnet list $SOLUTION_FILE package --vulnerable --include-transitive
+    - echo "SAST scan completed."
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# Static analysis of C# source code (Semgrep, free community rulesets). Report-only.
+# Run via pip on a plain Python image — the official Semgrep image expects the code
+# mounted at /src, which the GitLab runner does not do.
+semgrep:sast:
+  stage: sast
+  image: python:3.12-slim
+  needs: []
+  script:
+    - echo "Installing Semgrep..."
+    - pip install --quiet --disable-pip-version-check semgrep
+    - echo "Running Semgrep SAST..."
+    - semgrep scan --config p/csharp --config p/security-audit --config p/secrets --config p/dockerfile --metrics off --disable-version-check --exclude docker/liveness .
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+publish:
+  stage: publish
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_IMAGE_TAG}
+  needs:
+    - job: restore
+      artifacts: true
+  before_script: *dotnet_restore_guard
+  script:
+    - echo "Publishing API project..."
+    - dotnet publish $API_PROJECT --configuration Release --no-restore --output $PUBLISH_OUTPUT_DIR
+    - echo "Publish completed!"
+    - ls -la $PUBLISH_OUTPUT_DIR
+  artifacts:
+    paths:
+      - $PUBLISH_OUTPUT_DIR/
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# ============================================
+# DOCKER BUILD STAGES
+# ============================================
+
+docker:build:dev:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: publish
+      artifacts: true
+    - job: prepare:env:dev
+      artifacts: true
+  script:
+    - echo "Building Docker image for DEV..."
+    # Dockerfile.ci is runtime-only and takes the publish output as its build context,
+    # so this no longer restores/builds the solution a second time inside Docker.
+    - docker build -f Dockerfile.ci --build-arg DOTNET_IMAGE_TAG=${DOTNET_IMAGE_TAG} -t ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -t ${DOCKER_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}-dev ${PUBLISH_OUTPUT_DIR}
+    - echo "Docker image built successfully!"
+    - docker images | grep ${DOCKER_IMAGE_NAME}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# Trivy and Syft are report-only, so they run alongside deploy:dev instead of
+# holding the image hostage on the way to it.
+trivy:image:dev:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: docker:build:dev
+    - job: prepare:env:dev
+      artifacts: true
+  script:
+    - echo "Running Trivy CVE scan..."
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --exit-code 0 --severity CRITICAL,HIGH ${DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+sbom:dev:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: docker:build:dev
+    - job: prepare:env:dev
+      artifacts: true
+  script:
+    - echo "Generating SBOM with Syft..."
+    - docker run --rm -e DOCKER_HOST=unix:///var/run/docker.sock -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/output anchore/syft docker:${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -o spdx-json=/output/sbom-dev.spdx.json
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - sbom-dev.spdx.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+docker:build:staging:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: publish
+      artifacts: true
+    - job: prepare:env:staging
+      artifacts: true
+  script:
+    - echo "Building Docker image for STAGING..."
+    - docker build -t ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -t ${DOCKER_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}-staging .
+    - echo "Docker image built successfully!"
+    - docker images | grep ${DOCKER_IMAGE_NAME}
+    - echo "Running Trivy CVE scan..."
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --exit-code 0 --severity CRITICAL,HIGH ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} || true
+    - echo "Generating SBOM with Syft..."
+    - docker run --rm -e DOCKER_HOST=unix:///var/run/docker.sock -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/output anchore/syft docker:${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -o spdx-json=/output/sbom-staging.spdx.json
+  artifacts:
+    when: always
+    paths:
+      - sbom-staging.spdx.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+
+docker:build:production:
+  stage: docker
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: publish
+      artifacts: true
+    - job: prepare:env:production
+      artifacts: true
+  script:
+    - echo "Building Docker image for PRODUCTION..."
+    - docker build -t ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -t ${DOCKER_IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}-prod .
+    - echo "Docker image built successfully!"
+    - docker images | grep ${DOCKER_IMAGE_NAME}
+    - echo "Running Trivy CVE scan..."
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --exit-code 0 --severity CRITICAL,HIGH ${DOCKER_IMAGE_NAME}:${DOCKER_TAG} || true
+    - echo "Generating SBOM with Syft..."
+    - docker run --rm -e DOCKER_HOST=unix:///var/run/docker.sock -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/output anchore/syft docker:${DOCKER_IMAGE_NAME}:${DOCKER_TAG} -o spdx-json=/output/sbom-production.spdx.json
+  artifacts:
+    when: always
+    paths:
+      - sbom-production.spdx.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ============================================
+# DEPLOY STAGES - Manual deployment (play button)
+# ============================================
+
+deploy:dev:
+  stage: deploy
+  image: docker:latest
+  variables:
+    # Per-environment constants for the deploy, kept OUT of the dotenv artifact on purpose:
+    # GitLab caps dotenv artifacts at 20 variables and prepare:env:dev was over it. These are
+    # fixed values for this environment rather than anything prepare computes, so a job-level
+    # variable is the right home for them and is not subject to that limit.
+    MATRIX_SERVER_NAME: "matrix.bee-app.tech"
+    MATRIX_PUBLIC_HOMESERVER_URL: "https://matrix.bee-app.tech"
+    MATRIX_ENVIRONMENT_PREFIX: "dev"
+      # Public hostname, not the LAN address, even though dev is on-prem: dev should exercise
+      # the same path production uses so the cutover reproduces a proven configuration.
+    MATRIX_HOMESERVER_URL: "https://matrix.bee-app.tech"
+    MATRIX_APPSERVICE_ID: "bee-appservice-dev"
+    MATRIX_SENDER_LOCALPART: "bee-dev"
+      # The admin API only: /_synapse/* is blocked at the proxy in front of matrix.bee-app.tech,
+      # so booking-chat-purge talks to the host directly. Everything else keeps the public path.
+    MATRIX_ADMIN_API_URL: "http://10.10.10.152:8008"
+    RABBITMQ_VHOST: "dev"
+    REDIS_DB: "1"
+    SIGNALR_CHANNEL_PREFIX: "BeeLogistics:signalr:dev:"
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: docker:build:dev
+    - job: prepare:env:dev
+      artifacts: true
+  script:
+    - echo "=========================================="
+    - echo "Deploying to DEV environment"
+    - echo "Database - $POSTGRES_DB"
+    - echo "Port - $API_PORT"
+    - echo "Container - $CONTAINER_NAME"
+    - 'echo "MQTT configured - Host: ${MQTT_HOST:-NOT_SET}, Port: ${MQTT_PORT:-NOT_SET}"'
+    - echo "=========================================="
+    - echo "Creating network if not exists..."
+    - docker network create beeapp-network || true
+    - echo "Starting shared Redis (default port) if not running..."
+    - docker start ${REDIS_CONTAINER} || docker run -d --name ${REDIS_CONTAINER} --restart unless-stopped --network beeapp-network redis:7-alpine redis-server --appendonly yes --port ${REDIS_PORT} --requirepass "${REDIS_PASSWORD:-}"
+    - echo "Starting RabbitMQ for DEV if not running..."
+    - docker start ${RABBITMQ_CONTAINER} || docker run -d --name ${RABBITMQ_CONTAINER} --restart unless-stopped --network beeapp-network -e RABBITMQ_DEFAULT_USER=${RABBITMQ_USER} -e RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD} rabbitmq:3-management
+    - echo "Ensuring the RabbitMQ vhost for this deployment exists..."
+    # Idempotent: add_vhost fails when it already exists, which is the normal case on redeploy.
+    # MassTransit creates its own exchanges and queues inside the vhost; only the vhost and its
+    # permissions have to pre-exist.
+    - docker exec ${RABBITMQ_CONTAINER} rabbitmqctl add_vhost "${RABBITMQ_VHOST}" || true
+    - |
+      # Grant the new vhost to every user that actually exists in the broker.
+      #
+      # NOT ${RABBITMQ_USER}: that only seeds RABBITMQ_DEFAULT_USER on a container's FIRST boot,
+      # and beeapp-rabbitmq is long-lived, so it need not name a real user. The app takes its real
+      # credentials from Vault (RabbitMQ__Username/Password), which CI cannot see. Granting every
+      # existing user covers whichever one the app authenticates as, without CI holding secrets.
+      #
+      # --no-table-headers matters: `-q` alone suppresses the "Listing users ..." banner but still
+      # prints the column header, so parsing without it tries to grant to a user called "user".
+      RMQ="docker exec ${RABBITMQ_CONTAINER} rabbitmqctl"
+      USERS=$($RMQ -q --no-table-headers list_users 2>/dev/null | awk '{print $1}' | grep -v '^$' || true)
+      if [ -z "$USERS" ]; then
+        # Older rabbitmqctl without --no-table-headers: drop the header row instead.
+        USERS=$($RMQ -q list_users | awk 'NR>1 {print $1}' | grep -v '^$' || true)
+      fi
+      if [ -z "$USERS" ]; then
+        echo "Could not list RabbitMQ users, so cannot grant access to vhost '${RABBITMQ_VHOST}'."
+        echo "Grant manually: rabbitmqctl set_permissions -p ${RABBITMQ_VHOST} <user> '.*' '.*' '.*'"
+        exit 1
+      fi
+      echo "Users in broker: $(echo $USERS | tr '\n' ' ')"
+      GRANTED=0
+      for u in $USERS; do
+        if $RMQ set_permissions -p "${RABBITMQ_VHOST}" "$u" ".*" ".*" ".*"; then
+          GRANTED=$((GRANTED+1))
+        else
+          # One odd account must not block the deploy; only a total failure is fatal.
+          echo "WARNING: could not grant '$u' on '${RABBITMQ_VHOST}'; continuing"
+        fi
+      done
+      if [ "$GRANTED" -eq 0 ]; then
+        echo "No user could be granted access to vhost '${RABBITMQ_VHOST}'. The app would start and"
+        echo "fail to reach the broker, so failing here instead."
+        exit 1
+      fi
+      echo "Granted $GRANTED user(s) on vhost '${RABBITMQ_VHOST}'"
+    - echo "Stopping existing container if any..."
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    - echo "Starting new container (SECRETS are fetched from Vault via Vault__RoleId/Vault__SecretId)..."
+    - |
+      # Delivery modes (#67) are ENABLED on dev so QA can exercise pricing, dispatch and
+      # ranking. Each value below is a CI variable with an inline default, so retuning is a
+      # variable change plus a re-run of this job -- not a code change. See
+      # docs/BOOKING_DELIVERY_MODES.md sections 7 and 9. Two limits are not free choices:
+      # offer TTLs must not go below many=1/few=2 (a 30s expiry grace is applied twice), and
+      # MODE_POOLING_MAX_BROADCAST_MINUTES feeds three read sites that must agree.
+      # Pricing (#73): the rate card IS the Pooling price and the faster tiers mark it up, so the
+      # pooling discount is 0. PLATFORM_COMMISSION_RATE is a FRACTION (0.05 = 5%) and startup
+      # validation now refuses anything outside 0..1. Vault overrides all of these.
+      # NOTE: comments must stay OUTSIDE the `docker run ... \` continuation below. A "#" line
+      # after a trailing backslash ends the command there, silently dropping every remaining
+      # argument including the image. That is exactly how this job broke.
+      # Matrix booking chat. Endpoints only -- AsToken/HsToken/AdminToken come from Vault
+      # (bee/config) and would be a secret in a CI variable otherwise. Ships disabled: the
+      # startup guard only demands the tokens once MATRIX_ENABLED is true.
+      #
+      # MATRIX_HOMESERVER_URL has NO inline default on purpose. Synapse runs on its own VM, not
+      # as a container on this network, so a container-name fallback would be unreachable -- and
+      # it would still satisfy the startup validation, turning a missing variable into a silent
+      # "no booking ever gets a chat room". Unset leaves it empty, which fails fast instead.
+      docker run -d --name ${CONTAINER_NAME} --restart unless-stopped -p ${API_PORT}:8080 \
+        -e ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT} -e ASPNETCORE_URLS=http://+:8080 \
+        -e "Vault__Address=${VAULT_ADDRESS}" -e "Vault__RoleId=${VAULT_ROLE_ID}" -e "Vault__SecretId=${VAULT_SECRET_ID}" -e "Vault__SkipTlsVerify=${VAULT_SKIP_TLS_VERIFY:-true}" \
+        -e "Cors__AllowedOrigins__0=${FRONTEND_URL}" -e "Cors__AllowedOrigins__1=${BACKOFFICE_URL}" -e "Cors__AllowedOrigins__2=${FRONTEND_URL_DEV}" -e "Cors__AllowedOrigins__3=${BACKOFFICE_URL_DEV}" -e "Cors__AllowedOrigins__4=${API_URL}" \
+        -e "ConnectionStrings__Redis=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}${REDIS_DB:+,defaultDatabase=${REDIS_DB}}" -e "Redis__ConnectionString=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}${REDIS_DB:+,defaultDatabase=${REDIS_DB}}" \
+        -e "JwtSettings__Issuer=${JWT_ISSUER}" -e "JwtSettings__Audience=${JWT_AUDIENCE}" -e "JwtSettings__ExpiryMinutes=${JWT_EXPIRY_MINUTES}" \
+        -e "Email__Host=${EMAIL_HOST}" -e "Email__Port=${EMAIL_PORT}" -e "Email__Username=${EMAIL_USERNAME}" -e "Email__From=${EMAIL_FROM}" -e "Email__UseSsl=${EMAIL_USE_SSL}" \
+        -e "Payments__ActiveGateway=${PAYMENTS_ACTIVE_GATEWAY:-paymongo}" \
+        -e "PayMongo__BaseUrl=${PAYMONGO_BASE_URL:-https://api.paymongo.com/}" \
+        -e "PayMongo__CheckoutSuccessUrl=${PAYMONGO_CHECKOUT_SUCCESS_URL}" -e "PayMongo__CheckoutCancelUrl=${PAYMONGO_CHECKOUT_CANCEL_URL}" \
+        -e "PayMongo__DefaultTransferProvider=${PAYMONGO_TRANSFER_PROVIDER:-instapay}" \
+        -e "Xendit__BaseUrl=${XENDIT_BASE_URL:-https://api.xendit.co/}" \
+        -e "RabbitMQ__Host=${RABBITMQ_CONTAINER}" -e "RabbitMQ__Port=${RABBITMQ_PORT}" -e "RabbitMQ__VirtualHost=${RABBITMQ_VHOST}" -e "SignalR__ChannelPrefix=${SIGNALR_CHANNEL_PREFIX}" \
+        -e "Mqtt__Host=${MQTT_HOST}" -e "Mqtt__Port=${MQTT_PORT}" -e "Mqtt__UseSsl=${MQTT_USE_SSL}" -e "Mqtt__IgnoreCertificateErrors=${MQTT_IGNORE_CERTIFICATE_ERRORS}" -e "Mqtt__Environment=${MQTT_ENV}" -e "Mqtt__LocationTopic=${MQTT_LOCATION_TOPIC}" \
+        -e "ClamAV__Enabled=${CLAMAV_ENABLED:-true}" -e "ClamAV__Host=${CLAMAV_HOST:-localhost}" -e "ClamAV__Port=${CLAMAV_PORT:-3310}" -e "ClamAV__TimeoutSeconds=${CLAMAV_TIMEOUT_SECONDS:-30}" \
+        -e "S3__Endpoint=${S3_ENDPOINT:-}" -e "S3__CdnEndpoint=${S3_CDN_ENDPOINT:-}" -e "S3__Region=${S3_REGION:-auto}" -e "S3__UseSSL=${S3_USE_SSL:-true}" -e "S3__BucketName=${S3_BUCKET_NAME:-}" -e "S3__ObjectKeyPrefix=${S3_OBJECT_KEY_PREFIX:-}" \
+        -e "DigitalOcean__Endpoint=${DIGITALOCEAN_ENDPOINT:-}" -e "DigitalOcean__CdnEndpoint=${DIGITALOCEAN_CDN_ENDPOINT:-}" -e "DigitalOcean__Region=${DIGITALOCEAN_REGION:-sgp1}" -e "DigitalOcean__UseSSL=${DIGITALOCEAN_USE_SSL:-true}" -e "DigitalOcean__BucketName=${DIGITALOCEAN_BUCKET_NAME:-}" -e "DigitalOcean__ObjectKeyPrefix=${DIGITALOCEAN_OBJECT_KEY_PREFIX:-}" \
+        -e "FileStorage__Provider=${FILE_STORAGE_PROVIDER:-DigitalOcean}" \
+        -e "Zammad__BaseUrl=${ZAMMAD_BASE_URL:-http://10.10.10.91:9080}" -e "Zammad__Enabled=${ZAMMAD_ENABLED:-true}" \
+        -e "Matrix__Enabled=${MATRIX_ENABLED:-false}" -e "Matrix__HomeserverUrl=${MATRIX_HOMESERVER_URL}" -e "Matrix__PublicHomeserverUrl=${MATRIX_PUBLIC_HOMESERVER_URL:-}" -e "Matrix__ServerName=${MATRIX_SERVER_NAME:-}" -e "Matrix__EnvironmentPrefix=${MATRIX_ENVIRONMENT_PREFIX:-}" -e "Matrix__AppServiceId=${MATRIX_APPSERVICE_ID:-}" -e "Matrix__SenderLocalpart=${MATRIX_SENDER_LOCALPART:-}" -e "Matrix__AdminApiUrl=${MATRIX_ADMIN_API_URL:-}" \
+        -e "SEQ_SERVER_URL=${SEQ_SERVER_URL:-}" \
+        -e "Sentry__Dsn=${SENTRY_DSN:-}" -e "SENTRY_RELEASE=${CI_COMMIT_SHORT_SHA}" \
+        -e "Serilog__MinimumLevel__Override__Sentry=${SERILOG_SENTRY_LEVEL:-Warning}" \
+        -e "Sms__Providers__IlocosSms__ApiBaseUrl=${SMS_ILOCOS_API_BASE_URL:-https://sms.ilocosscript.live}" -e "Sms__Providers__PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "Sms__Providers__PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "BookingSettings__ProximityRadiusKm=${PROXIMITY_RADIUS_KM:-35}" \
+        -e "BookingSettings__ScheduledClaimLeadMinutes=${SCHEDULED_CLAIM_LEAD_MINUTES:-45}" \
+        -e "BookingSettings__MaxActiveBookingsPerDriver=${MAX_ACTIVE_BOOKINGS_PER_DRIVER:-3}" \
+        -e "BookingSettings__MaxScheduledClaimsPerDriver=${MAX_SCHEDULED_CLAIMS_PER_DRIVER:-5}" \
+        -e "DriverWallet__PlatformCommissionRate=${PLATFORM_COMMISSION_RATE:-0.05}" \
+        -e "Pricing__DeliveryModes__Regular__Multiplier=${MODE_REGULAR_MULTIPLIER:-1.05}" \
+        -e "Pricing__DeliveryModes__OnDemand__Multiplier=${MODE_ONDEMAND_MULTIPLIER:-1.25}" \
+        -e "Pricing__DeliveryModes__OnDemand__FlatFee=${MODE_ONDEMAND_FLAT_FEE:-0}" \
+        -e "Pricing__DeliveryModes__OnDemand__MinFee=${MODE_ONDEMAND_MIN_FEE:-20}" \
+        -e "Pricing__DeliveryModes__OnDemand__MaxFee=${MODE_ONDEMAND_MAX_FEE:-500}" \
+        -e "Pricing__DeliveryModes__Pooling__DiscountRate=${MODE_POOLING_DISCOUNT_RATE:-0}" \
+        -e "Pricing__DeliveryModes__Pooling__MaxDiscount=${MODE_POOLING_MAX_DISCOUNT:-0}" \
+        -e "Pricing__FareTrust__Enforce=${FARE_TRUST_ENFORCE:-false}" \
+        -e "Pricing__FareTrust__ToleranceAbsolute=${FARE_TRUST_TOLERANCE_ABSOLUTE:-25.00}" \
+        -e "Pricing__FareTrust__ToleranceRate=${FARE_TRUST_TOLERANCE_RATE:-0.10}" \
+        -e "BookingSettings__MaxBookingsPerPulseTick=${MAX_BOOKINGS_PER_PULSE_TICK:-200}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3InitialSearchRadiusKm=${MODE_ONDEMAND_H3_INITIAL_KM:-7}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3MaxSearchRadiusKm=${MODE_ONDEMAND_H3_MAX_KM:-12}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalFreshSeconds=${MODE_ONDEMAND_PULSE_FRESH:-5}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalWarmSeconds=${MODE_ONDEMAND_PULSE_WARM:-10}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalCoolSeconds=${MODE_ONDEMAND_PULSE_COOL:-20}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalStaleSeconds=${MODE_ONDEMAND_PULSE_STALE:-45}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationManyDriversMinutes=${MODE_ONDEMAND_TTL_MANY:-1}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationFewDriversMinutes=${MODE_ONDEMAND_TTL_FEW:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__NoDriverRetryMinutes=${MODE_ONDEMAND_NO_DRIVER_RETRY:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWeight=${MODE_ONDEMAND_QUALITY_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWindowDays=${MODE_ONDEMAND_QUALITY_WINDOW_DAYS:-14}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreMinSamples=${MODE_ONDEMAND_QUALITY_MIN_SAMPLES:-5}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxBroadcastMinutes=${MODE_POOLING_MAX_BROADCAST_MINUTES:-25}" \
+        -e "BookingSettings__DeliveryModes__Pooling__OfferExpirationFewDriversMinutes=${MODE_POOLING_TTL_FEW:-8}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PulseIntervalWarmSeconds=${MODE_POOLING_PULSE_WARM:-60}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingScoreWeight=${MODE_POOLING_SCORE_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxDetourKm=${MODE_POOLING_MAX_DETOUR_KM:-4.0}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingCandidateLimit=${MODE_POOLING_CANDIDATE_LIMIT:-45}" \
+        -e "Features__DisableRateLimiting=${FEATURES__DISABLE_RATE_LIMITING:-true}" \
+        -e "Location__UpdateBurstAllowance=${LOCATION_UPDATE_BURST_ALLOWANCE:-0}" \
+        --network beeapp-network ${DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+      # Rate limiting is OFF on dev (#76), and it takes both vars above because two independent
+      # limiters are involved. Neither can be turned off from appsettings.Development.json:
+      # .gitignore:88-89 ignores appsettings.*.json, so that file never reaches the built image
+      # and Features:DisableRateLimiting silently falls back to its hardcoded false.
+      #   Features__DisableRateLimiting  -> short-circuits RateLimitingMiddleware (100/min general
+      #     bucket, which covers /api/config, /api/mqtt/credentials and /api/locations/update).
+      #   Location__UpdateBurstAllowance -> 0 trips the burstCapacity<=0 bypass in
+      #     DriverLocationStateTracker.TryConsumeUpdateAllowance, disabling the per-driver 1/s
+      #     bucket in LocationSanitizer that rejects MQTT fixes from any driver over ~36 km/h.
+      # Both default to on-for-dev so no CI variable is needed; set the CI variables to override.
+      # Staging keeps its own conditional hook below and production stays rate limited.
+      # SECRETS now in Vault bee/config (NOT passed here): ConnectionStrings__DefaultConnection,
+      # JwtSettings__Secret, Email__Password, Xendit__ApiKey/WebhookToken,
+      # PayMongo__SecretKey/WebhookSecret/SourceAccountNumber/SourceAccountName/SourceAccountBic,
+      # RabbitMQ__Username/Password,
+      # Mqtt__Username/Password, S3__AccessKey/SecretKey, DigitalOcean__AccessKey/SecretKey, Zammad__ApiToken/WebhookSecret,
+      # PhilSMS__ApiToken, Sms__Providers__*__ApiToken/ApiKey, Seed__DefaultPassword,
+      # Matrix__AsToken/HsToken/AdminToken.
+    - echo "DEV Deployment completed!"
+    - docker ps | grep ${CONTAINER_NAME}
+  environment:
+    name: dev
+    url: https://dev-api.bee-app.tech
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+deploy:staging:
+  stage: deploy
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: docker:build:staging
+    - job: prepare:env:staging
+      artifacts: true
+  script:
+    - echo "=========================================="
+    - echo "Deploying to STAGING environment"
+    - echo "Database - $POSTGRES_DB"
+    - echo "Port - $API_PORT"
+    - echo "Container - $CONTAINER_NAME"
+    - 'echo "MQTT configured - Host: ${MQTT_HOST:-NOT_SET}, Port: ${MQTT_PORT:-NOT_SET}"'
+    - echo "=========================================="
+    - echo "Creating network if not exists..."
+    - docker network create beeapp-network || true
+    - echo "Starting shared Redis (default port) if not running..."
+    - docker start ${REDIS_CONTAINER} || docker run -d --name ${REDIS_CONTAINER} --restart unless-stopped --network beeapp-network redis:7-alpine redis-server --appendonly yes --port ${REDIS_PORT} --requirepass "${REDIS_PASSWORD:-}"
+    - echo "Starting RabbitMQ for STAGING if not running..."
+    - docker start ${RABBITMQ_CONTAINER} || docker run -d --name ${RABBITMQ_CONTAINER} --restart unless-stopped --network beeapp-network -e RABBITMQ_DEFAULT_USER=${RABBITMQ_USER} -e RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD} rabbitmq:3-management
+    - echo "Stopping existing container if any..."
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    - echo "Starting new container (SECRETS are fetched from Vault via Vault__RoleId/Vault__SecretId)..."
+    - |
+      # Delivery modes (#67) are ENABLED on staging (UAT) so QA can exercise pricing, dispatch and
+      # ranking. Each value below is a CI variable with an inline default, so retuning is a
+      # variable change plus a re-run of this job -- not a code change. See
+      # docs/BOOKING_DELIVERY_MODES.md sections 7 and 9. Two limits are not free choices:
+      # offer TTLs must not go below many=1/few=2 (a 30s expiry grace is applied twice), and
+      # MODE_POOLING_MAX_BROADCAST_MINUTES feeds three read sites that must agree.
+      # Pricing (#73): the rate card IS the Pooling price and the faster tiers mark it up, so the
+      # pooling discount is 0. PLATFORM_COMMISSION_RATE is a FRACTION (0.05 = 5%) and startup
+      # validation now refuses anything outside 0..1. Vault overrides all of these.
+      docker run -d --name ${CONTAINER_NAME} --restart unless-stopped -p ${API_PORT}:8080 \
+        -e ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT} -e ASPNETCORE_URLS=http://+:8080 \
+        -e "Vault__Address=${VAULT_ADDRESS}" -e "Vault__RoleId=${VAULT_ROLE_ID}" -e "Vault__SecretId=${VAULT_SECRET_ID}" -e "Vault__SkipTlsVerify=${VAULT_SKIP_TLS_VERIFY:-true}" \
+        -e "Cors__AllowedOrigins__0=${FRONTEND_URL}" -e "Cors__AllowedOrigins__1=${BACKOFFICE_URL}" -e "Cors__AllowedOrigins__2=${FRONTEND_URL_DEV}" -e "Cors__AllowedOrigins__3=${BACKOFFICE_URL_DEV}" -e "Cors__AllowedOrigins__4=${API_URL}" \
+        -e "ConnectionStrings__Redis=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}" -e "Redis__ConnectionString=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}" \
+        -e "JwtSettings__Issuer=${JWT_ISSUER}" -e "JwtSettings__Audience=${JWT_AUDIENCE}" -e "JwtSettings__ExpiryMinutes=${JWT_EXPIRY_MINUTES}" \
+        -e "Email__Host=${EMAIL_HOST}" -e "Email__Port=${EMAIL_PORT}" -e "Email__Username=${EMAIL_USERNAME}" -e "Email__From=${EMAIL_FROM}" -e "Email__UseSsl=${EMAIL_USE_SSL}" \
+        -e "Payments__ActiveGateway=${PAYMENTS_ACTIVE_GATEWAY:-paymongo}" \
+        -e "PayMongo__BaseUrl=${PAYMONGO_BASE_URL:-https://api.paymongo.com/}" \
+        -e "PayMongo__CheckoutSuccessUrl=${PAYMONGO_CHECKOUT_SUCCESS_URL}" -e "PayMongo__CheckoutCancelUrl=${PAYMONGO_CHECKOUT_CANCEL_URL}" \
+        -e "PayMongo__DefaultTransferProvider=${PAYMONGO_TRANSFER_PROVIDER:-instapay}" \
+        -e "Xendit__BaseUrl=${XENDIT_BASE_URL:-https://api.xendit.co/}" \
+        -e "RabbitMQ__Host=${RABBITMQ_CONTAINER}" -e "RabbitMQ__Port=${RABBITMQ_PORT}" \
+        -e "Mqtt__Host=${MQTT_HOST}" -e "Mqtt__Port=${MQTT_PORT}" -e "Mqtt__UseSsl=${MQTT_USE_SSL}" -e "Mqtt__IgnoreCertificateErrors=${MQTT_IGNORE_CERTIFICATE_ERRORS}" -e "Mqtt__Environment=${MQTT_ENV}" -e "Mqtt__LocationTopic=${MQTT_LOCATION_TOPIC}" \
+        -e "Zammad__BaseUrl=${ZAMMAD_BASE_URL:-http://10.10.10.91:9080}" -e "Zammad__Enabled=${ZAMMAD_ENABLED:-true}" \
+        -e "SEQ_SERVER_URL=${SEQ_SERVER_URL:-}" \
+        -e "Sentry__Dsn=${SENTRY_DSN:-}" -e "SENTRY_RELEASE=${CI_COMMIT_SHORT_SHA}" \
+        -e "Serilog__MinimumLevel__Override__Sentry=${SERILOG_SENTRY_LEVEL:-Warning}" \
+        -e "Sms__Providers__IlocosSms__ApiBaseUrl=${SMS_ILOCOS_API_BASE_URL:-https://sms.ilocosscript.live}" -e "Sms__Providers__PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "Sms__Providers__PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "BookingSettings__ProximityRadiusKm=${PROXIMITY_RADIUS_KM:-35}" \
+        -e "BookingSettings__ScheduledClaimLeadMinutes=${SCHEDULED_CLAIM_LEAD_MINUTES:-45}" \
+        -e "BookingSettings__MaxActiveBookingsPerDriver=${MAX_ACTIVE_BOOKINGS_PER_DRIVER:-3}" \
+        -e "BookingSettings__MaxScheduledClaimsPerDriver=${MAX_SCHEDULED_CLAIMS_PER_DRIVER:-5}" \
+        -e "DriverWallet__PlatformCommissionRate=${PLATFORM_COMMISSION_RATE:-0.05}" \
+        -e "Pricing__DeliveryModes__Regular__Multiplier=${MODE_REGULAR_MULTIPLIER:-1.05}" \
+        -e "Pricing__DeliveryModes__OnDemand__Multiplier=${MODE_ONDEMAND_MULTIPLIER:-1.25}" \
+        -e "Pricing__DeliveryModes__OnDemand__FlatFee=${MODE_ONDEMAND_FLAT_FEE:-0}" \
+        -e "Pricing__DeliveryModes__OnDemand__MinFee=${MODE_ONDEMAND_MIN_FEE:-20}" \
+        -e "Pricing__DeliveryModes__OnDemand__MaxFee=${MODE_ONDEMAND_MAX_FEE:-500}" \
+        -e "Pricing__DeliveryModes__Pooling__DiscountRate=${MODE_POOLING_DISCOUNT_RATE:-0}" \
+        -e "Pricing__DeliveryModes__Pooling__MaxDiscount=${MODE_POOLING_MAX_DISCOUNT:-0}" \
+        -e "Pricing__FareTrust__Enforce=${FARE_TRUST_ENFORCE:-false}" \
+        -e "Pricing__FareTrust__ToleranceAbsolute=${FARE_TRUST_TOLERANCE_ABSOLUTE:-25.00}" \
+        -e "Pricing__FareTrust__ToleranceRate=${FARE_TRUST_TOLERANCE_RATE:-0.10}" \
+        -e "BookingSettings__MaxBookingsPerPulseTick=${MAX_BOOKINGS_PER_PULSE_TICK:-200}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3InitialSearchRadiusKm=${MODE_ONDEMAND_H3_INITIAL_KM:-7}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3MaxSearchRadiusKm=${MODE_ONDEMAND_H3_MAX_KM:-12}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalFreshSeconds=${MODE_ONDEMAND_PULSE_FRESH:-5}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalWarmSeconds=${MODE_ONDEMAND_PULSE_WARM:-10}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalCoolSeconds=${MODE_ONDEMAND_PULSE_COOL:-20}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalStaleSeconds=${MODE_ONDEMAND_PULSE_STALE:-45}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationManyDriversMinutes=${MODE_ONDEMAND_TTL_MANY:-1}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationFewDriversMinutes=${MODE_ONDEMAND_TTL_FEW:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__NoDriverRetryMinutes=${MODE_ONDEMAND_NO_DRIVER_RETRY:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWeight=${MODE_ONDEMAND_QUALITY_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWindowDays=${MODE_ONDEMAND_QUALITY_WINDOW_DAYS:-14}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreMinSamples=${MODE_ONDEMAND_QUALITY_MIN_SAMPLES:-5}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxBroadcastMinutes=${MODE_POOLING_MAX_BROADCAST_MINUTES:-25}" \
+        -e "BookingSettings__DeliveryModes__Pooling__OfferExpirationFewDriversMinutes=${MODE_POOLING_TTL_FEW:-8}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PulseIntervalWarmSeconds=${MODE_POOLING_PULSE_WARM:-60}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingScoreWeight=${MODE_POOLING_SCORE_WEIGHT:-0.35}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxDetourKm=${MODE_POOLING_MAX_DETOUR_KM:-4.0}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingCandidateLimit=${MODE_POOLING_CANDIDATE_LIMIT:-45}" \
+        ${FEATURES__DISABLE_RATE_LIMITING:+-e "Features__DisableRateLimiting=${FEATURES__DISABLE_RATE_LIMITING}"} \
+        --network beeapp-network ${DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+      # SECRETS now in Vault bee/config (NOT passed here): ConnectionStrings__DefaultConnection,
+      # JwtSettings__Secret, Email__Password, Xendit__ApiKey/WebhookToken,
+      # PayMongo__SecretKey/WebhookSecret/SourceAccountNumber/SourceAccountName/SourceAccountBic,
+      # RabbitMQ__Username/Password,
+      # Mqtt__Username/Password, S3__AccessKey/SecretKey, DigitalOcean__AccessKey/SecretKey, Zammad__ApiToken, PhilSMS__ApiToken,
+      # Sms__Providers__*__ApiToken/ApiKey, Seed__DefaultPassword.
+    - echo "STAGING Deployment completed!"
+    - docker ps | grep ${CONTAINER_NAME}
+  environment:
+    name: staging
+    url: https://staging-api.bee-app.tech
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+
+deploy:production:
+  stage: deploy
+  image: docker:latest
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - job: docker:build:production
+    - job: prepare:env:production
+      artifacts: true
+  script:
+    - echo "=========================================="
+    - echo "Deploying to PRODUCTION environment"
+    - echo "Database - $POSTGRES_DB"
+    - echo "Port - $API_PORT"
+    - echo "Container - $CONTAINER_NAME"
+    - 'echo "MQTT configured - Host: ${MQTT_HOST:-NOT_SET}, Port: ${MQTT_PORT:-NOT_SET}"'
+    - echo "=========================================="
+    - echo "Creating network if not exists..."
+    - docker network create beeapp-network || true
+    - echo "Starting shared Redis (default port) if not running..."
+    - docker start ${REDIS_CONTAINER} || docker run -d --name ${REDIS_CONTAINER} --restart unless-stopped --network beeapp-network redis:7-alpine redis-server --appendonly yes --port ${REDIS_PORT} --requirepass "${REDIS_PASSWORD:-}"
+    - echo "Starting RabbitMQ for PRODUCTION if not running..."
+    - docker start ${RABBITMQ_CONTAINER} || docker run -d --name ${RABBITMQ_CONTAINER} --restart unless-stopped --network beeapp-network -e RABBITMQ_DEFAULT_USER=${RABBITMQ_USER} -e RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD} rabbitmq:3-management
+    - echo "Stopping existing container if any..."
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    - echo "Starting new container (SECRETS are fetched from Vault via Vault__RoleId/Vault__SecretId)..."
+    - |
+      # Delivery modes (#67) are NEUTRAL on production: every default below prices and
+      # dispatches a mode exactly like Regular, so deploying this changes no customer's fare
+      # and no driver's offer. Roll a mode out by setting the CI variables and re-running this
+      # job. NOTE: cross-booking ordering is NOT config-gated -- it keys off the persisted
+      # Booking.DispatchPriority column, so On-Demand is already pulsed and shown first.
+      # Pricing (#73) is NOT neutral here: the tiering is the intended price everywhere, so
+      # Regular is +5% and On-Demand +25% over the card. The dispatch knobs above stay neutral.
+      docker run -d --name ${CONTAINER_NAME} --restart unless-stopped -p ${API_PORT}:8080 \
+        -e ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT} -e ASPNETCORE_URLS=http://+:8080 \
+        -e "Vault__Address=${VAULT_ADDRESS}" -e "Vault__RoleId=${VAULT_ROLE_ID}" -e "Vault__SecretId=${VAULT_SECRET_ID}" -e "Vault__SkipTlsVerify=${VAULT_SKIP_TLS_VERIFY:-true}" \
+        -e "Cors__AllowedOrigins__0=${FRONTEND_URL}" -e "Cors__AllowedOrigins__1=${BACKOFFICE_URL}" -e "Cors__AllowedOrigins__2=${API_URL}" \
+        -e "ConnectionStrings__Redis=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}" -e "Redis__ConnectionString=${REDIS_CONTAINER}:${REDIS_PORT}${REDIS_PASSWORD:+,password=${REDIS_PASSWORD}}" \
+        -e "JwtSettings__Issuer=${JWT_ISSUER}" -e "JwtSettings__Audience=${JWT_AUDIENCE}" -e "JwtSettings__ExpiryMinutes=${JWT_EXPIRY_MINUTES}" \
+        -e "Email__Host=${EMAIL_HOST}" -e "Email__Port=${EMAIL_PORT}" -e "Email__Username=${EMAIL_USERNAME}" -e "Email__From=${EMAIL_FROM}" -e "Email__UseSsl=${EMAIL_USE_SSL}" \
+        -e "Payments__ActiveGateway=${PAYMENTS_ACTIVE_GATEWAY:-paymongo}" \
+        -e "PayMongo__BaseUrl=${PAYMONGO_BASE_URL:-https://api.paymongo.com/}" \
+        -e "PayMongo__CheckoutSuccessUrl=${PAYMONGO_CHECKOUT_SUCCESS_URL}" -e "PayMongo__CheckoutCancelUrl=${PAYMONGO_CHECKOUT_CANCEL_URL}" \
+        -e "PayMongo__DefaultTransferProvider=${PAYMONGO_TRANSFER_PROVIDER:-instapay}" \
+        -e "Xendit__BaseUrl=${XENDIT_BASE_URL:-https://api.xendit.co/}" \
+        -e "RabbitMQ__Host=${RABBITMQ_CONTAINER}" -e "RabbitMQ__Port=${RABBITMQ_PORT}" \
+        -e "Mqtt__Host=${MQTT_HOST}" -e "Mqtt__Port=${MQTT_PORT}" -e "Mqtt__UseSsl=${MQTT_USE_SSL}" -e "Mqtt__IgnoreCertificateErrors=${MQTT_IGNORE_CERTIFICATE_ERRORS}" -e "Mqtt__Environment=${MQTT_ENV}" -e "Mqtt__LocationTopic=${MQTT_LOCATION_TOPIC}" \
+        -e "ClamAV__Enabled=${CLAMAV_ENABLED:-true}" -e "ClamAV__Host=${CLAMAV_HOST:-localhost}" -e "ClamAV__Port=${CLAMAV_PORT:-3310}" -e "ClamAV__TimeoutSeconds=${CLAMAV_TIMEOUT_SECONDS:-30}" \
+        -e "S3__Endpoint=${S3_ENDPOINT:-}" -e "S3__CdnEndpoint=${S3_CDN_ENDPOINT:-}" -e "S3__Region=${S3_REGION:-auto}" -e "S3__UseSSL=${S3_USE_SSL:-true}" -e "S3__BucketName=${S3_BUCKET_NAME:-}" -e "S3__ObjectKeyPrefix=${S3_OBJECT_KEY_PREFIX:-}" \
+        -e "DigitalOcean__Endpoint=${DIGITALOCEAN_ENDPOINT:-}" -e "DigitalOcean__CdnEndpoint=${DIGITALOCEAN_CDN_ENDPOINT:-}" -e "DigitalOcean__Region=${DIGITALOCEAN_REGION:-sgp1}" -e "DigitalOcean__UseSSL=${DIGITALOCEAN_USE_SSL:-true}" -e "DigitalOcean__BucketName=${DIGITALOCEAN_BUCKET_NAME:-}" -e "DigitalOcean__ObjectKeyPrefix=${DIGITALOCEAN_OBJECT_KEY_PREFIX:-}" \
+        -e "FileStorage__Provider=${FILE_STORAGE_PROVIDER:-DigitalOcean}" \
+        -e "Zammad__BaseUrl=${ZAMMAD_BASE_URL:-http://10.10.10.91:9080}" -e "Zammad__Enabled=${ZAMMAD_ENABLED:-true}" \
+        -e "SEQ_SERVER_URL=${SEQ_SERVER_URL:-}" \
+        -e "Sentry__Dsn=${SENTRY_DSN:-}" -e "SENTRY_RELEASE=${CI_COMMIT_SHORT_SHA}" \
+        -e "Serilog__MinimumLevel__Override__Sentry=${SERILOG_SENTRY_LEVEL:-Warning}" \
+        -e "Sms__Providers__IlocosSms__ApiBaseUrl=${SMS_ILOCOS_API_BASE_URL:-https://sms.ilocosscript.live}" -e "Sms__Providers__PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "Sms__Providers__PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "PhilSMS__ApiBaseUrl=${PHILSMS_API_BASE_URL:-https://dashboard.philsms.com/api/v3}" -e "PhilSMS__SenderId=${PHILSMS_SENDER_ID:-BeeOnDemand}" \
+        -e "BookingSettings__ProximityRadiusKm=${PROXIMITY_RADIUS_KM:-35}" \
+        -e "BookingSettings__ScheduledClaimLeadMinutes=${SCHEDULED_CLAIM_LEAD_MINUTES:-45}" \
+        -e "BookingSettings__MaxActiveBookingsPerDriver=${MAX_ACTIVE_BOOKINGS_PER_DRIVER:-3}" \
+        -e "BookingSettings__MaxScheduledClaimsPerDriver=${MAX_SCHEDULED_CLAIMS_PER_DRIVER:-5}" \
+        -e "DriverWallet__PlatformCommissionRate=${PLATFORM_COMMISSION_RATE:-0.05}" \
+        -e "Pricing__DeliveryModes__Regular__Multiplier=${MODE_REGULAR_MULTIPLIER:-1.05}" \
+        -e "Pricing__DeliveryModes__OnDemand__Multiplier=${MODE_ONDEMAND_MULTIPLIER:-1.25}" \
+        -e "Pricing__DeliveryModes__OnDemand__FlatFee=${MODE_ONDEMAND_FLAT_FEE:-0}" \
+        -e "Pricing__DeliveryModes__OnDemand__MinFee=${MODE_ONDEMAND_MIN_FEE:-20}" \
+        -e "Pricing__DeliveryModes__OnDemand__MaxFee=${MODE_ONDEMAND_MAX_FEE:-500}" \
+        -e "Pricing__DeliveryModes__Pooling__DiscountRate=${MODE_POOLING_DISCOUNT_RATE:-0}" \
+        -e "Pricing__DeliveryModes__Pooling__MaxDiscount=${MODE_POOLING_MAX_DISCOUNT:-0}" \
+        -e "Pricing__FareTrust__Enforce=${FARE_TRUST_ENFORCE:-false}" \
+        -e "Pricing__FareTrust__ToleranceAbsolute=${FARE_TRUST_TOLERANCE_ABSOLUTE:-25.00}" \
+        -e "Pricing__FareTrust__ToleranceRate=${FARE_TRUST_TOLERANCE_RATE:-0.10}" \
+        -e "BookingSettings__MaxBookingsPerPulseTick=${MAX_BOOKINGS_PER_PULSE_TICK:-200}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3InitialSearchRadiusKm=${MODE_ONDEMAND_H3_INITIAL_KM:-3}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__H3MaxSearchRadiusKm=${MODE_ONDEMAND_H3_MAX_KM:-10}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalFreshSeconds=${MODE_ONDEMAND_PULSE_FRESH:-10}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalWarmSeconds=${MODE_ONDEMAND_PULSE_WARM:-30}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalCoolSeconds=${MODE_ONDEMAND_PULSE_COOL:-60}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__PulseIntervalStaleSeconds=${MODE_ONDEMAND_PULSE_STALE:-120}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationManyDriversMinutes=${MODE_ONDEMAND_TTL_MANY:-2}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__OfferExpirationFewDriversMinutes=${MODE_ONDEMAND_TTL_FEW:-5}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__NoDriverRetryMinutes=${MODE_ONDEMAND_NO_DRIVER_RETRY:-5}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWeight=${MODE_ONDEMAND_QUALITY_WEIGHT:-0.0}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreWindowDays=${MODE_ONDEMAND_QUALITY_WINDOW_DAYS:-14}" \
+        -e "BookingSettings__DeliveryModes__OnDemand__QualityScoreMinSamples=${MODE_ONDEMAND_QUALITY_MIN_SAMPLES:-5}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxBroadcastMinutes=${MODE_POOLING_MAX_BROADCAST_MINUTES:-10}" \
+        -e "BookingSettings__DeliveryModes__Pooling__OfferExpirationFewDriversMinutes=${MODE_POOLING_TTL_FEW:-5}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PulseIntervalWarmSeconds=${MODE_POOLING_PULSE_WARM:-30}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingScoreWeight=${MODE_POOLING_SCORE_WEIGHT:-0.0}" \
+        -e "BookingSettings__DeliveryModes__Pooling__MaxDetourKm=${MODE_POOLING_MAX_DETOUR_KM:-4.0}" \
+        -e "BookingSettings__DeliveryModes__Pooling__PoolingCandidateLimit=${MODE_POOLING_CANDIDATE_LIMIT:-45}" \
+        --network beeapp-network ${DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+      # SECRETS now in Vault bee/config (NOT passed here): ConnectionStrings__DefaultConnection,
+      # JwtSettings__Secret, Email__Password, Xendit__ApiKey/WebhookToken,
+      # PayMongo__SecretKey/WebhookSecret/SourceAccountNumber/SourceAccountName/SourceAccountBic,
+      # RabbitMQ__Username/Password,
+      # Mqtt__Username/Password, S3__AccessKey/SecretKey, DigitalOcean__AccessKey/SecretKey, Zammad__ApiToken/WebhookSecret,
+      # PhilSMS__ApiToken, Sms__Providers__*__ApiToken/ApiKey, Seed__DefaultPassword.
+      # NOTE: rate limiting stays ON in production (no Features__DisableRateLimiting here).
+    - echo "PRODUCTION Deployment completed!"
+    - docker ps | grep ${CONTAINER_NAME}
+  environment:
+    name: production
+    url: https://api.mybeeapp.com
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ============================================
+# DAST STAGE - OWASP ZAP baseline — DISABLED for now (runner moved to the cloud)
+# ============================================
+# To re-enable: uncomment the `- dast` stage above and the jobs below, then:
+#   1. Point DAST_TARGET at the runner host's LOCAL IP (e.g. http://10.104.0.3:8081) —
+#      ZAP runs on the runner, so the target only needs to be reachable from there.
+#      Do NOT use `localhost` (that is the ZAP container itself) or the public URL
+#      (that goes through Cloudflare).
+#   2. Fix the "/zap/wrk is not mounted" error: symlink it to the checkout dir and
+#      pass a bare filename to -r:
+#        - ln -s "$(pwd)/zap-out" /zap/wrk
+#        - zap-baseline.py -t "${DAST_TARGET}" -I -r zap-report.html
+#      (drop the `|| true` — allow_failure: true already keeps the pipeline green)
+#
+# .dast_template: &dast_template
+#   stage: dast
+#   image:
+#     name: ghcr.io/zaproxy/zaproxy:stable
+#     entrypoint: [""]
+#   script:
+#     - echo "OWASP ZAP baseline against ${DAST_TARGET}"
+#     - mkdir -p zap-out && chmod 0777 zap-out
+#     - ln -s "$(pwd)/zap-out" /zap/wrk
+#     - zap-baseline.py -t "${DAST_TARGET}" -I -r zap-report.html
+#   artifacts:
+#     when: always
+#     paths:
+#       - zap-out/
+#     expire_in: 1 week
+#   allow_failure: true
+#   when: manual
+#
+# dast:dev:
+#   <<: *dast_template
+#   variables:
+#     DAST_TARGET: "http://10.104.0.3:8081"
+#   needs:
+#     - job: deploy:dev
+#       optional: true
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == "dev"
+#
+# dast:staging:
+#   <<: *dast_template
+#   variables:
+#     DAST_TARGET: "http://10.104.0.3:8082"
+#   needs:
+#     - job: deploy:staging
+#       optional: true
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == "staging"
+#
+# dast:production:
+#   <<: *dast_template
+#   variables:
+#     DAST_TARGET: "http://<production-runner-local-ip>:8083"
+#   needs:
+#     - job: deploy:production
+#       optional: true
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == "main"

@@ -1,0 +1,31 @@
+# Development Dockerfile with Hot Reload Support
+# This Dockerfile is optimized for local development with auto-refresh
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS development
+
+WORKDIR /app
+
+# Install dotnet-ef tools for migrations (optional but useful)
+RUN dotnet tool install --global dotnet-ef || true
+ENV PATH="${PATH}:/root/.dotnet/tools"
+
+# Copy everything and restore in one step. A hand-maintained per-module COPY list used
+# to live here for layer caching, but nothing kept it in sync with src/Modules/* -- it
+# went stale (referenced deleted modules, missing several real ones) and broke restore.
+# Volume mounts override this at runtime; this just ensures the image has everything
+# needed for the initial build.
+COPY . .
+RUN dotnet restore bee-app-backend.sln
+
+# Expose ports
+EXPOSE 8080 5000
+
+# Set working directory to project root
+WORKDIR /app
+
+# Default command (can be overridden in docker-compose)
+# dotnet watch enables hot reload - changes to .cs files will automatically restart the app
+# --no-launch-profile prevents launchSettings.json from interfering
+# --non-interactive prevents prompts
+CMD ["dotnet", "watch", "--project", "src/BeeLogistics.Api/BeeLogistics.Api.csproj", "--urls", "http://+:8080", "--non-interactive"]
+

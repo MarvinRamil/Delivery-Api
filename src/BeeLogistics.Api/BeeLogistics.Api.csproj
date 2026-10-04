@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+    <PackageReference Include="Hangfire.AspNetCore" Version="1.8.22" />
+    <PackageReference Include="Hangfire.Core" Version="1.8.22" />
+    <PackageReference Include="Hangfire.PostgreSql" Version="1.20.13" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.7" />
+    <PackageReference Include="MassTransit.EntityFrameworkCore" Version="8.5.7" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.9" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.9" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.16.0-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+    <PackageReference Include="Sentry.AspNetCore" Version="6.8.0" />
+    <PackageReference Include="Sentry.Serilog" Version="6.8.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+    <PackageReference Include="Serilog.Sinks.Seq" Version="8.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+    <PackageReference Include="Scalar.AspNetCore" Version="1.2.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Identity\BeeLogistics.Modules.Identity.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Bookings\BeeLogistics.Modules.Bookings.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Payment\BeeLogistics.Modules.Payment.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Notification\BeeLogistics.Modules.Notification.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Chat\BeeLogistics.Modules.Chat.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.CRM\BeeLogistics.Modules.CRM.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Drivers\BeeLogistics.Modules.Drivers.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Referrals\BeeLogistics.Modules.Referrals.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Giveaways\BeeLogistics.Modules.Giveaways.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Offers\BeeLogistics.Modules.Offers.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Integration\BeeLogistics.Modules.Integration.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Rating\BeeLogistics.Modules.Rating.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Map\BeeLogistics.Modules.Map.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Fraud\BeeLogistics.Modules.Fraud.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Accounting\BeeLogistics.Modules.Accounting.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Verification\BeeLogistics.Modules.Verification.csproj" />
+    <ProjectReference Include="..\BeeLogistics.Shared\BeeLogistics.Shared.csproj" />
+    <ProjectReference Include="..\Modules\BeeLogistics.Modules.Messaging\BeeLogistics.Modules.Messaging.csproj" />
+  </ItemGroup>
+
+</Project>

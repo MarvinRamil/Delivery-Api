@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>{PageTitle} - {AppName}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5; line-height: 1.6;">
+    <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f5f5f5;">
+        <tr>
+            <td style="padding: 40px 20px;">
+                <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow: hidden;">
+                    <tr>
+                        <td style="padding: 40px 20px; background: linear-gradient(135deg, #FFD700 0%, #FFC700 100%); text-align: center;">
+                            {Logo}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 50px 40px; background-color: #ffffff;">
+                            <h1 style="color: #1c190d; margin: 0 0 20px 0; font-size: 28px; font-weight: 700; line-height: 1.2;">{SubjectTitle}</h1>
+                            <p style="color: #4a4a4a; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                                Hello {FullName},
+                            </p>
+                            <p style="color: #4a4a4a; font-size: 16px; line-height: 1.6; margin: 0 0 30px 0;">
+                                {IntroLine}
+                            </p>
+                            <div style="text-align: center; margin: 40px 0;">
+                                <div style="display: inline-block; padding: 25px 50px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border: 3px solid #FFD700; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                    <span style="font-size: 36px; font-weight: 700; color: #1c190d; letter-spacing: 8px; font-family: 'Courier New', monospace; display: inline-block;">{OTP}</span>
+                                </div>
+                            </div>
+                            <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px 20px; margin: 30px 0; border-radius: 4px;">
+                                <p style="color: #856404; font-size: 14px; line-height: 1.6; margin: 0 0 10px 0; font-weight: 600;">
+                                    ⚠️ Security Notice
+                                </p>
+                                <p style="color: #856404; font-size: 14px; line-height: 1.6; margin: 0;">
+                                    This code will expire in 10 minutes. Never share this code with anyone. {AppName} staff will never ask for your verification code.
+                                </p>
+                            </div>
+                            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 30px 0 0 0;">
+                                {FooterLine}
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 30px 40px; background-color: #f8f9fa; border-top: 1px solid #e9ecef; text-align: center;">
+                            <p style="color: #666; font-size: 12px; margin: 0 0 8px 0;">© {Year} {AppName}. All rights reserved.</p>
+                            <p style="color: #999; font-size: 11px; margin: 0;">This is an automated email. Please do not reply to this message.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+
