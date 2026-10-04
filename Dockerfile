@@ -11,7 +11,7 @@ COPY . .
 RUN dotnet publish src/BeeLogistics.Api/BeeLogistics.Api.csproj -c Release -o /app/publish
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-preview AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0-preview AS runtime
 WORKDIR /app
 
 # Install curl for healthcheck
