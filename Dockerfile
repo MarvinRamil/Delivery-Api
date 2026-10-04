@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0-preview AS build
 WORKDIR /src
 
 # Copy everything and restore+publish in one step. A hand-maintained per-module COPY

@@ -1,7 +1,7 @@
 # Development Dockerfile with Hot Reload Support
 # This Dockerfile is optimized for local development with auto-refresh
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0-preview AS development
+FROM mcr.microsoft.com/dotnet/sdk:11.0-preview AS development
 
 WORKDIR /app
 
